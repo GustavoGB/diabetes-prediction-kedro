@@ -518,7 +518,7 @@ check.
 CI runs nothing you cannot run yourself — this is the whole workflow, in order:
 
 ```bash
-uv sync --frozen --extra dev                      # the lockfile, not a re-resolve
+uv sync --locked --extra dev                      # fails if uv.lock is out of date
 uv run black --check src tests scripts
 uv run ruff check src tests scripts
 uv run kedro run                                  # must precede pytest
@@ -536,9 +536,14 @@ and silently skips if the inference pipeline never ran.
 
 ### Pinned versions
 
-`actions/checkout@v5` and `astral-sh/setup-uv@v7` are both pinned to a major tag
-that resolves (astral-sh stopped publishing bare major tags after v7; the current
-release is 10.x). CI installs Python **3.12** to match the `python:3.12-slim`
+Both actions are pinned to a major tag that resolves — `actions/checkout@v5`
+and `astral-sh/setup-uv@v7`. Neither is the newest release (checkout is on v7,
+setup-uv on 10.x); they are pinned because they work, so a major bump is a
+deliberate PR that CI can vet, not a silent upgrade. Note that astral-sh stopped
+publishing bare major tags after `v7`, so `@v10` would not resolve at all.
+`uv sync --locked` asserts `uv.lock` is current: a dependency added to
+`pyproject.toml` without re-running `uv lock` fails CI instead of installing a
+stale lock behind your back. CI installs Python **3.12** to match the `python:3.12-slim`
 base image in the [Dockerfile](Dockerfile), so the tested interpreter is the
 shipped one. The lockfile covers `>=3.10,<3.14`, so developing on 3.11 locally is
 fine.
@@ -550,22 +555,17 @@ every PR with the checklist above, so the manual steps CI cannot judge — "is t
 README still true?" — are not forgotten.
 
 To make the checks *mandatory* rather than advisory, protect `main` so a branch
-cannot merge until all three jobs are green:
+cannot merge until all three jobs are green. In the GitHub UI: **Settings →
+Branches → Add branch ruleset → Require status checks to pass**, then select the
+three checks by their job names:
 
-```bash
-gh api -X PUT repos/GustavoGB/diabetes-prediction-kedro/branches/main/protection \
-  -H "Accept: application/vnd.github+json" \
-  -f "required_status_checks[strict]=true" \
-  -f "required_status_checks[contexts][]=Format, lint, tests" \
-  -f "required_status_checks[contexts][]=Pipeline end to end" \
-  -f "required_status_checks[contexts][]=Image builds and serves" \
-  -F "enforce_admins=false" \
-  -F "required_pull_request_reviews=null" \
-  -F "restrictions=null"
-```
+- `Format, lint, tests`
+- `Pipeline end to end`
+- `Image builds and serves`
 
-Or in the GitHub UI: **Settings → Branches → Add branch ruleset → Require status
-checks to pass**.
+The equivalent `gh api -X PUT .../branches/main/protection` call exists, but the
+REST body is fussy about types and required keys — use the UI unless you are
+scripting it.
 
 ---
 
@@ -944,6 +944,8 @@ src/diabetes/
     data_engineering/{nodes,pipeline}.py
     modelling/{nodes,pipeline}.py
     inference/{nodes,pipeline}.py
+scripts/
+  data_quality_demo.py   what each validation layer catches (make quality)
 notebooks/            the original exploratory notebook, unchanged
 tests/                51 tests
 Dockerfile            trains during build; serves uvicorn
