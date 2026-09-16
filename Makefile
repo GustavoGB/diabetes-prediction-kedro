@@ -23,11 +23,11 @@ test:  ## Run the test suite
 	uv run pytest -q
 
 format:  ## Format with black
-	uv run black src tests
+	uv run black src tests scripts
 
 lint:  ## Check formatting and lint
-	uv run black --check src tests
-	uv run ruff check src tests
+	uv run black --check src tests scripts
+	uv run ruff check src tests scripts
 
 docker-build:  ## Build the Docker image
 	docker compose build

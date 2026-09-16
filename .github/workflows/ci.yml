@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push to the same branch supersedes the first: the older run is
+# cancelled instead of competing for runners.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format, lint, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      # astral-sh stopped publishing bare major tags after v7 (current release
+      # is 10.x); v7 is the newest major tag that actually resolves.
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - run: uv sync --frozen --extra dev
+
+      - run: uv run black --check src tests scripts
+      - run: uv run ruff check src tests scripts
+
+      # Must precede pytest. tests/test_api.py exercises the real FastAPI app,
+      # which loads the fitted artifacts from data/06_models — gitignored, so a
+      # fresh checkout has none and five API tests fail on 503. The *default*
+      # pipeline is required, not --pipeline training: the parity test compares
+      # HTTP scores against data/07_model_output/inference_predictions.json and
+      # silently skips if the inference pipeline has not run.
+      - run: uv run kedro run
+
+      - run: uv run pytest -q
+
+  integration:
+    name: Pipeline end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - run: uv sync --frozen --extra dev
+
+      - run: uv run kedro run
+
+      # Exit code 0 only proves Kedro did not raise. These assert the run
+      # actually produced a promotable model, scored the held-out batch and
+      # passed every Great Expectations suite.
+      - name: Assert the pipeline outputs
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          model = Path("data/06_models/production_model.pkl")
+          predictions = Path("data/07_model_output/inference_predictions.json")
+          reports = [
+              Path(f"data/08_reporting/{name}_quality.json")
+              for name in ("modelling_data", "master_table", "inference_data")
+          ]
+
+          missing = [str(p) for p in [model, predictions, *reports] if not p.exists()]
+          assert not missing, f"pipeline did not produce: {missing}"
+          assert model.stat().st_size > 0, "production_model.pkl is empty"
+
+          for report in reports:
+              result = json.loads(report.read_text())
+              assert result["success"], f"{report}: {result['failures']}"
+
+          scored = json.loads(predictions.read_text())
+          assert len(scored) == 116, f"expected 116 scored rows, got {len(scored)}"
+          assert all(0.0 <= row["probability"] <= 1.0 for row in scored)
+          assert all(row["prediction"] in (0, 1) for row in scored)
+
+          print(f"OK: 3 suites green, {len(scored)} rows scored")
+          PY
+
+  docker:
+    name: Image builds and serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      # The Dockerfile trains the model inside the image, so a successful build
+      # is already a second, independent run of the training pipeline.
+      - run: docker build -t diabetes-api:ci .
+
+      - run: docker run -d --name diabetes-api -p 8000:8000 diabetes-api:ci
+
+      - name: Wait for /ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/ready > /dev/null; then
+              echo "ready after ~$((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "container never became ready"
+          exit 1
+
+      - name: Smoke-test the running container
+        run: |
+          python3 - <<'PY'
+          import json
+          import urllib.request
+
+          BASE = "http://localhost:8000"
+          PATIENT = {
+              "Pregnancies": 6, "Glucose": 183, "BloodPressure": 72,
+              "SkinThickness": 35, "Insulin": 0, "BMI": 38.6,
+              "DiabetesPedigreeFunction": 1.2, "Age": 55,
+          }
+
+          with urllib.request.urlopen(f"{BASE}/ready") as response:
+              assert response.status == 200, response.status
+              ready = json.load(response)
+          assert ready["model"], f"/ready reports no model: {ready}"
+          assert ready["n_features"] > 0, ready
+          print("ready:", ready)
+
+          request = urllib.request.Request(
+              f"{BASE}/predict",
+              data=json.dumps(PATIENT).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request) as response:
+              assert response.status == 200, response.status
+              body = json.load(response)
+          print("predict:", body)
+
+          probability = body["probability"]
+          assert 0.0 <= probability <= 1.0, body
+          assert body["prediction"] == int(probability >= 0.5), body
+
+          # This patient currently scores 0.968447, but that exact float is NOT
+          # asserted. The image retrains on every build and then *promotes* one
+          # of two candidates by test roc_auc: LogisticRegression (0.8165) vs a
+          # tuned RandomForest (0.8115) — a 0.005 margin. KNN imputation and a
+          # 27-candidate GridSearchCV are sensitive to the BLAS/scikit-learn
+          # build, so another runner can flip the winner, and the same payload
+          # then scores 0.885345 under the RandomForest. That is a ~0.08 swing,
+          # far beyond low-order digits, so an exact (or 1e-6) assertion would
+          # be flaky. The band below covers both candidates and still fails if
+          # the model, the feature order or the scaler regresses.
+          assert abs(probability - 0.968447) <= 0.15, f"high-risk patient scored {probability}"
+          PY
+
+      - name: Container logs
+        if: always()
+        run: docker logs diabetes-api
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f diabetes-api
