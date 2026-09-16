@@ -28,11 +28,12 @@ data/01_raw/*.csv ──► data_engineering ──► master_table ──► mo
 6. [Run with Docker](#6-run-with-docker)
 7. [Run the tests](#7-run-the-tests)
 8. [Troubleshooting](#8-troubleshooting)
-9. [How it is built](#9-how-it-is-built)
-10. [Results](#10-results)
-11. [What changed from the notebook](#11-what-changed-from-the-notebook)
-12. [Configuration reference](#12-configuration-reference)
-13. [Project layout](#13-project-layout)
+9. [Data quality: Pydantic + Great Expectations](#9-data-quality-pydantic--great-expectations)
+10. [How it is built](#10-how-it-is-built)
+11. [Results](#11-results)
+12. [What changed from the notebook](#12-what-changed-from-the-notebook)
+13. [Configuration reference](#13-configuration-reference)
+14. [Project layout](#14-project-layout)
 
 ---
 
@@ -83,7 +84,7 @@ once with `source .venv/bin/activate`.
 uv run kedro run
 ```
 
-Runs **24 nodes** — data engineering, modelling and inference — in about 5
+Runs **27 nodes** — data engineering, modelling and inference — in about 5
 seconds, and writes:
 
 | output | what it is |
@@ -97,13 +98,14 @@ seconds, and writes:
 | `data/06_models/production_model.pkl` | the promoted model |
 | `data/08_reporting/*_metrics.json` | per-split metrics for both candidates |
 | `data/07_model_output/inference_predictions.json` | 116 scored rows |
+| `data/08_reporting/*_quality.json` | Great Expectations reports for the three data quality checkpoints |
 
 ### One pipeline at a time
 
 ```bash
-uv run kedro run --pipeline data_engineering   # raw CSV -> master table (11 nodes)
+uv run kedro run --pipeline data_engineering   # raw CSV -> master table (13 nodes)
 uv run kedro run --pipeline modelling          # train, evaluate, promote (5 nodes)
-uv run kedro run --pipeline inference          # score the holdout CSV (8 nodes)
+uv run kedro run --pipeline inference          # score the holdout CSV (9 nodes)
 uv run kedro run --pipeline training           # data_engineering + modelling
 ```
 
@@ -437,7 +439,7 @@ takes ~2 minutes; the dependency layer is cached afterwards.
 ## 7. Run the tests
 
 ```bash
-uv run pytest -q          # 40 passed
+uv run pytest -q          # 51 passed
 uv run black src tests    # format      (make format)
 uv run black --check src tests && uv run ruff check src tests   # (make lint)
 ```
@@ -450,8 +452,9 @@ tests will report the 503 and the parity test will skip.
 | `test_data_engineering.py` | 9 | sentinel zeros, missing target/columns, fit-nodes never see test rows, encoder schema stability, unseen categories, outlier clipping, stratification |
 | `test_modelling.py` | 4 | the feature contract, config-driven estimator swap, per-split metrics, promotion by holdout score |
 | `test_inference.py` | 6 | the DataFrame/JSON adapter, threshold behaviour, feature selection, row-index preservation |
-| `test_pipelines.py` | 9 | registry names, unique node names, inference reuses the *same* transform functions, inference never fits, every artifact is persisted and reused, no orphan catalog entries, viz layers |
-| `test_api.py` | 12 | health/ready, validation, batch, dataset endpoints, bootstrap idempotence, no session per request, async handlers, **API-vs-batch parity** |
+| `test_pipelines.py` | 12 | registry names, unique node names, inference reuses the *same* transform functions, inference never fits, every artifact is persisted and reused, no orphan catalog entries, viz layers, both branches are validated, validation actually gates |
+| `test_validation.py` | 7 | a healthy batch passes untouched, out-of-range values fail, a degraded feed fails *even though every row is valid*, class-imbalance drift fails, truncation fails, advisory mode, absent columns skipped |
+| `test_api.py` | 13 | health/ready, validation, batch, dataset endpoints, bootstrap idempotence, no session per request, async handlers, 503 without leaking paths, **API-vs-batch parity** |
 
 The suite targets contracts rather than line coverage. The two that matter most:
 
@@ -459,6 +462,8 @@ The suite targets contracts rather than line coverage. The two that matter most:
   training fitted.
 - `test_api_matches_the_batch_pipeline` — the same rows scored over HTTP and via
   `kedro run --pipeline inference` must agree to the digit.
+- `test_a_degraded_feed_fails_even_though_every_row_is_valid` — the case Pydantic
+  structurally cannot see (see [section 9](#9-data-quality-pydantic--great-expectations)).
 
 ---
 
@@ -493,13 +498,186 @@ A `.telemetry` file with `consent: false` is committed, so it should not.
 
 ---
 
-## 9. How it is built
+## 9. Data quality: Pydantic + Great Expectations
 
-### `data_engineering` — 11 nodes, raw CSV → master table
+The project validates at **two different boundaries**, with two different tools,
+because they answer two different questions.
+
+| | Pydantic | Great Expectations |
+|---|---|---|
+| question | *is this **record** well-formed?* | *is this **batch** fit to train or score on?* |
+| unit | one row / one request | a whole dataframe |
+| boundary | the HTTP edge (`api.py`) | the pipeline edge (`validation.py`) |
+| sees | fields, types, per-field bounds | row counts, null rates, distributions, cardinality, medians |
+| when | every request, synchronously | every `kedro run`, per checkpoint |
+| failure | **422** to the caller | the run **stops**; a report lands in `08_reporting/` |
+| cost | microseconds | ~10 ms per suite on 650 rows |
+| declared in | `class Patient(BaseModel)` | `parameters.yml → data_quality` |
+
+### Why neither can do the other's job
+
+This is not a matter of preference — it is a **category difference**.
+
+A Pydantic model validates one object. "48% of `Insulin` is missing", "the
+positive class collapsed from 35% to 3%", "the feed returned 5 rows instead of
+650" are all properties of a **collection**. There is no field you can annotate
+to express them, because no single record is wrong. That is the entire blind
+spot, and it is exactly where data pipelines fail in practice: not with garbage
+rows, but with perfectly well-formed rows that no longer mean what they used to.
+
+The reverse is just as true. Running a GX suite per HTTP request would be
+nonsense: row-count and distribution expectations are undefined on a batch of
+one, and you would pay ~10 ms and a validation context for a call that currently
+takes 13 ms end to end. Pydantic costs microseconds and returns a precise
+422 pointing at the offending field.
+
+**So: Pydantic rejects a bad caller. Great Expectations rejects a bad dataset.**
+
+### Demonstrated
+
+Four realistic corruptions, run through both layers against the real inference
+CSV. Reproduce it yourself:
+
+```bash
+uv run python scripts/data_quality_demo.py      # or: make quality
+```
+
+```
+0. The real inference batch (baseline)
+  Pydantic : 116/116 rows valid
+  GX       : PASS (0/16 expectations failed)
+
+1. Upstream job truncated the feed to 5 rows
+  Pydantic : 5/5 rows valid                       <-- every row still perfect
+  GX       : FAIL (4/16 expectations failed)
+             - expect_table_row_count_to_be_between -> 5
+             - expect_column_values_to_not_be_null(SKINTHICKNESS) -> 60.0% unexpected
+             - expect_column_values_to_not_be_null(INSULIN) -> 80.0% unexpected
+             - expect_column_mean_to_be_between(OUTCOME) -> 0.0
+
+2. Insulin sensor stopped reporting (90% now unmeasured)
+  Pydantic : 116/116 rows valid                   <-- 0 is a legal value!
+  GX       : FAIL (1/16 expectations failed)
+             - expect_column_values_to_not_be_null(INSULIN) -> 94.8% unexpected
+
+3. Label pipeline broke: positives collapse to 2.6%
+  Pydantic : 116/116 rows valid                   <-- 0 and 1 are both legal
+  GX       : FAIL (1/16 expectations failed)
+             - expect_column_mean_to_be_between(OUTCOME) -> 0.0258...
+
+4. BMI arrives in the wrong unit (x10)
+  Pydantic : 3/116 rows valid                     <-- here they overlap
+  GX       : FAIL (1/16 expectations failed)
+             - expect_column_values_to_be_between(BMI) -> 100.0% unexpected
+```
+
+Cases 1–3 are the argument. **Every single row is valid**, and the dataset is
+ruined. A model trained on case 2 would quietly learn from a feature that is now
+95% imputed; a model trained on case 3 would learn to always predict 0 and
+report 97% accuracy. Both would pass every unit test in this repo and every
+Pydantic check in the API.
+
+Case 4 shows the deliberate overlap: bounds exist in both layers. That is
+defence in depth, not duplication — the API stops one bad caller at the door,
+the pipeline stops a bad upstream feed before it reaches the model.
+
+### The asymmetry is on purpose
+
+`Patient.Age` is `ge=21`; the GX suite allows `AGE >= 18`. That is not a drift
+bug. **The API is strict about what it accepts; the pipeline is tolerant about
+what history contains.** New requests must fall inside the range the model was
+fitted on (the youngest training patient is 21, so a 19-year-old is an
+extrapolation the service should refuse). Historical data is allowed to be
+messier than what you accept today, because you cannot go back and re-collect
+it. Postel's law, applied to a model boundary.
+
+### What this would have caught in this very project
+
+The notebook analysis turned up defects that dataset-level validation catches
+directly:
+
+- **The inference CSV has a different missingness profile** — `Glucose` has zero
+  sentinel-zeros there, while the modelling CSV has 5. The notebook derived its
+  "which columns are zero-coded" list from `min() == 0`, so it would silently
+  treat `Glucose` differently on the two files. A null-rate expectation makes
+  that visible instead of silent.
+- **Schema drift**: replaying the notebook's `pd.get_dummies` chain on the
+  inference CSV yields 24 columns, not 25. `ExpectTableColumnsToMatchSet` on the
+  cleaned frame plus the fitted `OneHotEncoder` closes that hole from both ends.
+- **Imputation silently not running**: the `master_table` suite asserts zero
+  nulls in all five sentinel columns. If the imputer were bypassed, the run
+  fails instead of scikit-learn raising something obscure ten nodes later.
+- **Stratification regressing**: `ExpectColumnMeanToBeBetween(OUTCOME, 0.2, 0.5)`
+  fails if the split stops preserving class balance.
+
+### How it is wired here
+
+Suites live in `conf/base/parameters.yml` as `{type, kwargs}` pairs and are
+instantiated by name — the same config-over-code indirection the modelling
+pipeline uses for `class_path`. Adding a check is a YAML edit.
+
+```yaml
+data_quality:
+  cleaned:
+    suite: cleaned_data
+    fail_on_error: true
+    expectations:
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: INSULIN, mostly: 0.40}   # ~48% unmeasured is normal
+      - type: ExpectColumnMeanToBeBetween
+        kwargs: {column: OUTCOME, min_value: 0.20, max_value: 0.50}
+```
+
+Three checkpoints, 27 nodes total:
+
+| checkpoint | suite | guards against |
+|---|---|---|
+| cleaned modelling data | `cleaned_data` | a bad training feed |
+| `master_table` | `master_table` | the pipeline's own post-conditions |
+| cleaned inference data | `cleaned_data` | **drift** — the same suite as training |
+
+That third row is the one worth pausing on: **the inference batch is held to the
+identical contract as the training data**. If next month's batch stops looking
+like what the model was fitted on, the run fails loudly rather than producing
+confident nonsense.
+
+`validate_data` returns the dataframe *and* a report, so downstream nodes take
+the validated frame as input. That dependency is what makes the check a **gate**
+rather than a passive observation — a test (`test_validation_gates_downstream_work`)
+asserts every validation node's output is actually consumed. Reports are written
+to `data/08_reporting/*_quality.json`, and `fail_on_error: false` switches a
+checkpoint from blocking to advisory if you would rather score and alert.
+
+### An honest caveat on the choice
+
+Great Expectations is not free: it adds ~60 MB and a sizeable dependency tree
+(GX itself, `altair`, `cryptography`) to a project whose core is ~700 lines. For
+a codebase this size, [**pandera**](https://pandera.readthedocs.io/) delivers
+most of the same value at a fraction of the weight, and its schemas are
+declarative classes that sit naturally beside Pydantic models.
+
+GX earns its place here for three reasons: its expectation vocabulary is the
+industry reference and reads as documentation; validation results are
+first-class artifacts you can persist, diff and alert on; and the expectation
+names themselves communicate intent to whoever inherits the pipeline. On a
+larger project the calculus is clearer still. On a smaller one, reach for
+pandera and keep the idea — the idea is the part that matters.
+
+Two anti-patterns to avoid either way: do not run dataset validation inside the
+request path, and do not assert the same bound in five places — pick the
+boundary each rule belongs to and keep it there.
+
+---
+
+## 10. How it is built
+
+### `data_engineering` — 13 nodes, raw CSV → master table
 
 ```
 raw_modelling_data
   → clean_data              upper-case schema, sentinel 0 → NaN
+  → validate_data           Great Expectations suite: row count, ranges,
+                            null budgets, class balance            [GATE]
   → split_data              stratified train/test tag in a SPLIT column
   → fit_imputer  ─────────┐ RobustScaler + KNNImputer(k=5)       [fit: train only]
   → apply_imputer ────────┘
@@ -510,6 +688,7 @@ raw_modelling_data
   → apply_encoder ────────┘
   → fit_scaler ───────────┐ RobustScaler on 10 numeric columns   [fit: train only]
   → apply_scaler ─────────┘
+  → validate_data           post-conditions: no NaN left, balance kept  [GATE]
   → master_table            652 × 35
 ```
 
@@ -537,10 +716,13 @@ The estimator is a `class_path` string in `conf/base/parameters.yml`, so swappin
 Each model artifact is self-describing — `{estimator, target_column,
 feature_columns, eval_splits}` — so inference never has to guess column order.
 
-### `inference` — 8 nodes
+### `inference` — 9 nodes
 
 Loads `production_model` plus the four fitted artifacts, applies the identical
 transform chain, and writes `data/07_model_output/inference_predictions.json`.
+
+The cleaned inference batch is held to the **same expectation suite as the
+training data**, which is what turns a passive pipeline into a drift check.
 
 ### The API
 
@@ -557,7 +739,7 @@ it fast under load:
 
 ---
 
-## 10. Results
+## 11. Results
 
 Held-out numbers, stratified 70/30 split, `random_state=17`:
 
@@ -578,7 +760,7 @@ leakage fixes below worked — the estimate generalises.
 
 ---
 
-## 11. What changed from the notebook
+## 12. What changed from the notebook
 
 The notebook is sound exploratory work, but several steps do not survive contact
 with a pipeline that has to score unseen data.
@@ -604,7 +786,7 @@ several gradient-boosting backends.
 
 ---
 
-## 12. Configuration reference
+## 13. Configuration reference
 
 Everything tunable lives in `conf/base/parameters.yml`; no code edit is needed.
 
@@ -618,6 +800,9 @@ Everything tunable lives in `conf/base/parameters.yml`; no code edit is needed.
 | `baseline` / `tuning` | `class_path`, `init_args`, `param_grid`, `cv`, `scoring` |
 | `selection` | which `metric` on which `split` decides promotion |
 | `inference.threshold` | decision threshold (default 0.5) |
+| `data_quality.cleaned` | the suite guarding both training and inference input |
+| `data_quality.master_table` | the pipeline's post-conditions |
+| `data_quality.*.fail_on_error` | `true` blocks the run, `false` reports and continues |
 
 Change a model without touching Python:
 
@@ -635,7 +820,7 @@ or machine-specific overrides in `conf/local/` — it is gitignored.
 
 ---
 
-## 13. Project layout
+## 14. Project layout
 
 ```
 conf/base/
@@ -647,6 +832,7 @@ data/
   02_intermediate/ … 08_reporting/    generated by kedro run
 src/diabetes/
   api.py              FastAPI service
+  validation.py       Great Expectations suites, config-driven
   settings.py         Kedro config-loader settings
   pipeline_registry.py
   pipelines/
@@ -654,7 +840,7 @@ src/diabetes/
     modelling/{nodes,pipeline}.py
     inference/{nodes,pipeline}.py
 notebooks/            the original exploratory notebook, unchanged
-tests/                40 tests
+tests/                51 tests
 Dockerfile            trains during build; serves uvicorn
 docker-compose.yml    one api service on :8000
 Makefile              make help

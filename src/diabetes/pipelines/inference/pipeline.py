@@ -6,6 +6,7 @@ imported from data_engineering — that is the guarantee against skew.
 
 from kedro.pipeline import Node, Pipeline
 
+from ... import validation
 from ..data_engineering.nodes import (
     apply_encoder,
     apply_imputer,
@@ -33,8 +34,14 @@ def create_pipeline(**kwargs) -> Pipeline:
                 name="clean_inference_data",
             ),
             Node(
+                func=validation.validate_data,
+                inputs=["cleaned_inference_data", "params:data_quality.cleaned"],
+                outputs=["validated_inference_data", "inference_data_quality"],
+                name="validate_cleaned_inference_data",
+            ),
+            Node(
                 func=apply_imputer,
-                inputs=["cleaned_inference_data", "imputer"],
+                inputs=["validated_inference_data", "imputer"],
                 outputs="imputed_inference_data",
                 name="impute_inference_data",
             ),

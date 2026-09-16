@@ -1,4 +1,4 @@
-.PHONY: help install train infer viz api test format lint docker-build docker-up docker-down
+.PHONY: help install train infer quality viz api test format lint docker-build docker-up docker-down
 .DEFAULT_GOAL := help
 
 install:  ## Create the venv and install everything (incl. dev extras)
@@ -9,6 +9,9 @@ train:  ## Run the data engineering + modelling pipelines
 
 infer:  ## Score data/01_raw/diabetes-dataset-inference.csv
 	uv run kedro run --pipeline inference
+
+quality:  ## Show what each validation layer catches
+	uv run python scripts/data_quality_demo.py
 
 viz:  ## Open the Kedro pipeline visualisation
 	uv run kedro viz

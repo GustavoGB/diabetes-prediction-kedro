@@ -2,6 +2,7 @@
 
 from kedro.pipeline import Node, Pipeline
 
+from ... import validation
 from . import nodes
 
 
@@ -15,8 +16,14 @@ def create_pipeline(**kwargs) -> Pipeline:
                 name="clean_data",
             ),
             Node(
+                func=validation.validate_data,
+                inputs=["cleaned_modelling_data", "params:data_quality.cleaned"],
+                outputs=["validated_modelling_data", "modelling_data_quality"],
+                name="validate_cleaned_modelling_data",
+            ),
+            Node(
                 func=nodes.split_data,
-                inputs=["cleaned_modelling_data", "params:columns", "params:split"],
+                inputs=["validated_modelling_data", "params:columns", "params:split"],
                 outputs="split_modelling_data",
                 name="split_data",
             ),
@@ -71,8 +78,14 @@ def create_pipeline(**kwargs) -> Pipeline:
             Node(
                 func=nodes.apply_scaler,
                 inputs=["encoded_modelling_data", "scaler"],
-                outputs="master_table",
+                outputs="scaled_modelling_data",
                 name="apply_scaler",
+            ),
+            Node(
+                func=validation.validate_data,
+                inputs=["scaled_modelling_data", "params:data_quality.master_table"],
+                outputs=["master_table", "master_table_quality"],
+                name="validate_master_table",
             ),
         ]
     )

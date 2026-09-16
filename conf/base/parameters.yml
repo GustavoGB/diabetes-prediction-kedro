@@ -74,3 +74,88 @@ selection:
 
 inference:
   threshold: 0.5
+
+# ------------------------------------------------------------------ data quality
+# Great Expectations suites. Pydantic validates one request at the HTTP boundary;
+# these validate a whole batch at the pipeline boundary — row counts, null rates,
+# value ranges and class balance, which no single-row model can express.
+# Expectations whose column is absent are skipped, so one suite guards both the
+# labelled modelling CSV and an unlabelled inference payload.
+data_quality:
+  # Applied to cleaned data on BOTH branches. Running the same suite over
+  # training and inference input is the drift check: the inference batch must
+  # look like the data the model was fitted on.
+  cleaned:
+    suite: cleaned_data
+    fail_on_error: true
+    expectations:
+      - type: ExpectTableRowCountToBeBetween
+        kwargs: {min_value: 20, max_value: 100000}
+      - type: ExpectTableColumnsToMatchSet
+        kwargs:
+          column_set: [PREGNANCIES, GLUCOSE, BLOODPRESSURE, SKINTHICKNESS,
+                       INSULIN, BMI, DIABETESPEDIGREEFUNCTION, AGE, OUTCOME]
+          exact_match: false
+      # Plausible physiological ranges. Sentinel zeros are already NaN by now,
+      # so a 0 here would mean the cleaning step silently stopped working.
+      - type: ExpectColumnValuesToBeBetween
+        kwargs: {column: PREGNANCIES, min_value: 0, max_value: 20}
+      - type: ExpectColumnValuesToBeBetween
+        kwargs: {column: GLUCOSE, min_value: 1, max_value: 300}
+      - type: ExpectColumnValuesToBeBetween
+        kwargs: {column: BLOODPRESSURE, min_value: 1, max_value: 200}
+      - type: ExpectColumnValuesToBeBetween
+        kwargs: {column: SKINTHICKNESS, min_value: 1, max_value: 110}
+      - type: ExpectColumnValuesToBeBetween
+        kwargs: {column: INSULIN, min_value: 1, max_value: 1000}
+      - type: ExpectColumnValuesToBeBetween
+        kwargs: {column: BMI, min_value: 1, max_value: 80}
+      - type: ExpectColumnValuesToBeBetween
+        kwargs: {column: AGE, min_value: 18, max_value: 120}
+      # Missingness budgets. Insulin is ~48% unmeasured in this dataset and that
+      # is expected; a jump past 60% means the source feed degraded.
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: GLUCOSE, mostly: 0.95}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: BMI, mostly: 0.95}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: BLOODPRESSURE, mostly: 0.90}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: INSULIN, mostly: 0.40}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: SKINTHICKNESS, mostly: 0.60}
+      # Target sanity, skipped automatically on unlabelled payloads.
+      - type: ExpectColumnValuesToBeInSet
+        kwargs: {column: OUTCOME, value_set: [0, 1]}
+      - type: ExpectColumnMeanToBeBetween
+        kwargs: {column: OUTCOME, min_value: 0.20, max_value: 0.50}
+
+  # Post-conditions of the whole data engineering pipeline.
+  master_table:
+    suite: master_table
+    fail_on_error: true
+    expectations:
+      - type: ExpectTableRowCountToBeBetween
+        kwargs: {min_value: 20, max_value: 100000}
+      # Imputation must have filled every gap: nothing reaches the model as NaN.
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: GLUCOSE}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: INSULIN}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: SKINTHICKNESS}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: BMI}
+      - type: ExpectColumnValuesToNotBeNull
+        kwargs: {column: BLOODPRESSURE}
+      - type: ExpectColumnValuesToBeInSet
+        kwargs: {column: SPLIT, value_set: [train, test]}
+      - type: ExpectColumnValuesToBeInSet
+        kwargs: {column: OUTCOME, value_set: [0, 1]}
+      # Stratification must have preserved the class balance.
+      - type: ExpectColumnMeanToBeBetween
+        kwargs: {column: OUTCOME, min_value: 0.20, max_value: 0.50}
+      # RobustScaler centres on the train median, so the column median lands
+      # near 0. A drift here means the scaler was refitted or bypassed.
+      - type: ExpectColumnMedianToBeBetween
+        kwargs: {column: GLUCOSE, min_value: -0.5, max_value: 0.5}

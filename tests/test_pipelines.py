@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 
+from diabetes import validation
 from diabetes.pipeline_registry import ALL, TRAINING
 from diabetes.pipelines.data_engineering import nodes as de_nodes
 from diabetes.pipelines.data_engineering import pipeline as de_pipeline
@@ -97,7 +98,10 @@ def test_free_inputs_are_catalogued_or_parameterised():
     every = tuple(PIPELINES.values())
     for name in _inputs(*every) - _outputs(*every):
         if name.startswith("params:"):
-            assert name.removeprefix("params:") in PARAMETERS, f"{name} is undeclared"
+            node = PARAMETERS
+            for key in name.removeprefix("params:").split("."):
+                assert key in node, f"{name} is undeclared"
+                node = node[key]
         else:
             assert name in CATALOG, f"{name} is neither produced nor catalogued"
 
@@ -113,3 +117,36 @@ def test_catalog_has_no_unused_entries():
     every = tuple(PIPELINES.values())
     used = _inputs(*every) | _outputs(*every)
     assert set(CATALOG) <= used, f"unused catalog entries: {set(CATALOG) - used}"
+
+
+def test_both_data_branches_are_validated():
+    """Training input and inference input must each pass a suite."""
+    for name in ("data_engineering", "inference"):
+        validators = [
+            node
+            for node in PIPELINES[name].nodes
+            if node.func is validation.validate_data
+        ]
+        assert validators, f"{name} has no data quality gate"
+
+
+def test_validation_gates_downstream_work():
+    """A validation node must feed something. A terminal check that nobody
+    consumes cannot stop bad data from reaching the model."""
+    every = tuple(PIPELINES.values())
+    all_nodes = [node for p in every for node in p.nodes]
+    for node in all_nodes:
+        if node.func is not validation.validate_data:
+            continue
+        frame_output = node.outputs[0]
+        consumers = [n for n in all_nodes if frame_output in n.inputs]
+        assert consumers, f"{node.name} produces {frame_output}, which nothing reads"
+
+
+def test_quality_reports_are_persisted():
+    for report in (
+        "modelling_data_quality",
+        "master_table_quality",
+        "inference_data_quality",
+    ):
+        assert report in CATALOG, f"{report} is not persisted"

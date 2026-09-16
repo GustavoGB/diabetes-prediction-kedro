@@ -76,6 +76,21 @@ production_model:
   filepath: data/06_models/production_model.pkl
   metadata: {kedro-viz: {layer: models}}
 
+modelling_data_quality:
+  type: json.JSONDataset
+  filepath: data/08_reporting/modelling_data_quality.json
+  metadata: {kedro-viz: {layer: reporting}}
+
+master_table_quality:
+  type: json.JSONDataset
+  filepath: data/08_reporting/master_table_quality.json
+  metadata: {kedro-viz: {layer: reporting}}
+
+inference_data_quality:
+  type: json.JSONDataset
+  filepath: data/08_reporting/inference_data_quality.json
+  metadata: {kedro-viz: {layer: reporting}}
+
 baseline_metrics:
   type: json.JSONDataset
   filepath: data/08_reporting/baseline_metrics.json
