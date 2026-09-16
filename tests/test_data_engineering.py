@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 import pytest
 
 from diabetes.pipelines.data_engineering import nodes
