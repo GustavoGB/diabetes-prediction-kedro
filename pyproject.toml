@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diabetes"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dynamic = ["version"]
+dependencies = [
+    "kedro~=1.2.0",
+    # Base install only: this project uses pandas.CSVDataset, pickle.PickleDataset
+    # and json.JSONDataset, none of which need the parquet/delta/sql backends.
+    "kedro-datasets>=9.1.1",
+    "kedro-viz>=12.3.0",
+    "scikit-learn>=1.5",
+    "pandas>=2.2",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.scripts]
+diabetes = "diabetes.__main__:main"
+
+[project.entry-points."kedro.hooks"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=8.0",
+    "httpx>=0.27",
+    "ruff~=0.12.0",
+    "jupyterlab>=4.0",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "diabetes.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+[tool.kedro]
+package_name = "diabetes"
+project_name = "diabetes-prediction"
+kedro_init_version = "1.2.0"
+source_dir = "src"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.kedro_telemetry]
+project_id = "6385d5f968904d94933b3524d6ef7473"

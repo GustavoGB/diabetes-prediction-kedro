@@ -1,0 +1,76 @@
+# Column lists are frozen here on purpose. The notebook derived them from the
+# data at hand (`min() == 0`, cardinality thresholds), which silently produces a
+# different schema for a different batch.
+columns:
+  target: OUTCOME
+  raw_numerical:
+    - PREGNANCIES
+    - GLUCOSE
+    - BLOODPRESSURE
+    - SKINTHICKNESS
+    - INSULIN
+    - BMI
+    - DIABETESPEDIGREEFUNCTION
+    - AGE
+  # 0 means "not measured" on these five, never a real reading.
+  zero_as_missing: [GLUCOSE, BLOODPRESSURE, SKINTHICKNESS, INSULIN, BMI]
+  engineered_numerical: [NEW_GLUCOSE_INSULIN, NEW_GLUCOSE_PREGNANCIES]
+  engineered_categorical:
+    - NEW_AGE_CAT
+    - NEW_BMI
+    - NEW_GLUCOSE
+    - NEW_AGE_BMI_NOM
+    - NEW_AGE_GLUCOSE_NOM
+
+split:
+  test_size: 0.3
+  random_state: 17
+  stratify: true
+
+imputer:
+  n_neighbors: 5
+
+outliers:
+  q_low: 0.05
+  q_high: 0.95
+  factor: 1.5
+
+feature_engineering:
+  senior_age: 50
+  bmi_bins: [0, 18.5, 24.9, 29.9, 100]
+  bmi_labels: [Underweight, Healthy, Overweight, Obese]
+  glucose_bins: [0, 140, 200, 300]
+  glucose_labels: [Normal, Prediabetes, Diabetes]
+  glucose_band_edges: [69, 99, 125]
+  glucose_band_labels: [low, normal, hidden, high]
+
+# Shared by both candidates so their contracts provably cannot drift.
+_model: &model
+  target_column: OUTCOME
+  train_splits: [train]
+  eval_splits: [train, test]
+
+baseline:
+  <<: *model
+  class_path: sklearn.linear_model.LogisticRegression
+  init_args: {random_state: 46, max_iter: 1000}
+
+# Swap `class_path` (e.g. sklearn.ensemble.HistGradientBoostingClassifier or
+# lightgbm.LGBMClassifier) and its grid to change the challenger — no code edit.
+tuning:
+  <<: *model
+  class_path: sklearn.ensemble.RandomForestClassifier
+  init_args: {random_state: 46}
+  cv: 5
+  scoring: roc_auc
+  param_grid:
+    n_estimators: [100, 200, 300]
+    max_depth: [null, 5, 10]
+    min_samples_split: [2, 5, 10]
+
+selection:
+  metric: roc_auc
+  split: test
+
+inference:
+  threshold: 0.5

@@ -1,0 +1,8 @@
+services:
+  api:
+    build: .
+    image: diabetes-api:latest
+    ports:
+      - "8000:8000"
+    # No volumes on purpose: the model is trained into the image, so a bind
+    # mount over /app/data would shadow the artifacts the API needs.

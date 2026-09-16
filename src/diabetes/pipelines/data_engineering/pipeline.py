@@ -1,0 +1,78 @@
+"""Raw modelling CSV -> master table, fitting every preprocessing artifact."""
+
+from kedro.pipeline import Node, Pipeline
+
+from . import nodes
+
+
+def create_pipeline(**kwargs) -> Pipeline:
+    return Pipeline(
+        [
+            Node(
+                func=nodes.clean_data,
+                inputs=["raw_modelling_data", "params:columns"],
+                outputs="cleaned_modelling_data",
+                name="clean_data",
+            ),
+            Node(
+                func=nodes.split_data,
+                inputs=["cleaned_modelling_data", "params:columns", "params:split"],
+                outputs="split_modelling_data",
+                name="split_data",
+            ),
+            Node(
+                func=nodes.fit_imputer,
+                inputs=["split_modelling_data", "params:columns", "params:imputer"],
+                outputs="imputer",
+                name="fit_imputer",
+            ),
+            Node(
+                func=nodes.apply_imputer,
+                inputs=["split_modelling_data", "imputer"],
+                outputs="imputed_modelling_data",
+                name="apply_imputer",
+            ),
+            Node(
+                func=nodes.fit_outlier_bounds,
+                inputs=["imputed_modelling_data", "params:columns", "params:outliers"],
+                outputs="outlier_bounds",
+                name="fit_outlier_bounds",
+            ),
+            Node(
+                func=nodes.apply_outlier_bounds,
+                inputs=["imputed_modelling_data", "outlier_bounds"],
+                outputs="primary_modelling_data",
+                name="apply_outlier_bounds",
+            ),
+            Node(
+                func=nodes.engineer_features,
+                inputs=["primary_modelling_data", "params:feature_engineering"],
+                outputs="featured_modelling_data",
+                name="engineer_features",
+            ),
+            Node(
+                func=nodes.fit_encoder,
+                inputs=["featured_modelling_data", "params:columns"],
+                outputs="encoder",
+                name="fit_encoder",
+            ),
+            Node(
+                func=nodes.apply_encoder,
+                inputs=["featured_modelling_data", "encoder"],
+                outputs="encoded_modelling_data",
+                name="apply_encoder",
+            ),
+            Node(
+                func=nodes.fit_scaler,
+                inputs=["encoded_modelling_data", "params:columns"],
+                outputs="scaler",
+                name="fit_scaler",
+            ),
+            Node(
+                func=nodes.apply_scaler,
+                inputs=["encoded_modelling_data", "scaler"],
+                outputs="master_table",
+                name="apply_scaler",
+            ),
+        ]
+    )

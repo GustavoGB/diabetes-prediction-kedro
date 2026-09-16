@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------- data engineering
+raw_modelling_data:
+  type: pandas.CSVDataset
+  filepath: data/01_raw/diabetes-dataset-modelling.csv
+  metadata: {kedro-viz: {layer: raw}}
+
+cleaned_modelling_data:
+  type: pandas.CSVDataset
+  filepath: data/02_intermediate/cleaned_modelling.csv
+  metadata: {kedro-viz: {layer: intermediate}}
+
+split_modelling_data:
+  type: pandas.CSVDataset
+  filepath: data/03_primary/split_modelling.csv
+  metadata: {kedro-viz: {layer: primary}}
+
+imputed_modelling_data:
+  type: pandas.CSVDataset
+  filepath: data/03_primary/imputed_modelling.csv
+  metadata: {kedro-viz: {layer: primary}}
+
+primary_modelling_data:
+  type: pandas.CSVDataset
+  filepath: data/03_primary/primary_modelling.csv
+  metadata: {kedro-viz: {layer: primary}}
+
+featured_modelling_data:
+  type: pandas.CSVDataset
+  filepath: data/04_feature/featured_modelling.csv
+  metadata: {kedro-viz: {layer: feature}}
+
+encoded_modelling_data:
+  type: pandas.CSVDataset
+  filepath: data/04_feature/encoded_modelling.csv
+  metadata: {kedro-viz: {layer: feature}}
+
+master_table:
+  type: pandas.CSVDataset
+  filepath: data/05_model_input/master_table.csv
+  metadata: {kedro-viz: {layer: model_input}}
+
+# -------------------------------------------------- fitted preprocessing artifacts
+imputer:
+  type: pickle.PickleDataset
+  filepath: data/06_models/imputer.pkl
+  metadata: {kedro-viz: {layer: models}}
+
+outlier_bounds:
+  type: json.JSONDataset
+  filepath: data/06_models/outlier_bounds.json
+  metadata: {kedro-viz: {layer: models}}
+
+encoder:
+  type: pickle.PickleDataset
+  filepath: data/06_models/encoder.pkl
+  metadata: {kedro-viz: {layer: models}}
+
+scaler:
+  type: pickle.PickleDataset
+  filepath: data/06_models/scaler.pkl
+  metadata: {kedro-viz: {layer: models}}
+
+# ---------------------------------------------------------------------- modelling
+baseline_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/baseline_model.pkl
+  metadata: {kedro-viz: {layer: models}}
+
+tuned_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/tuned_model.pkl
+  metadata: {kedro-viz: {layer: models}}
+
+production_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/production_model.pkl
+  metadata: {kedro-viz: {layer: models}}
+
+baseline_metrics:
+  type: json.JSONDataset
+  filepath: data/08_reporting/baseline_metrics.json
+  metadata: {kedro-viz: {layer: reporting}}
+
+tuned_metrics:
+  type: json.JSONDataset
+  filepath: data/08_reporting/tuned_metrics.json
+  metadata: {kedro-viz: {layer: reporting}}
+
+# ---------------------------------------------------------------------- inference
+raw_inference_data:
+  type: pandas.CSVDataset
+  filepath: data/01_raw/diabetes-dataset-inference.csv
+  metadata: {kedro-viz: {layer: raw}}
+
+cleaned_inference_data:
+  type: pandas.CSVDataset
+  filepath: data/02_intermediate/cleaned_inference.csv
+  metadata: {kedro-viz: {layer: intermediate}}
+
+primary_inference_data:
+  type: pandas.CSVDataset
+  filepath: data/03_primary/primary_inference.csv
+  metadata: {kedro-viz: {layer: primary}}
+
+encoded_inference_data:
+  type: pandas.CSVDataset
+  filepath: data/04_feature/encoded_inference.csv
+  metadata: {kedro-viz: {layer: feature}}
+
+scaled_inference_data:
+  type: pandas.CSVDataset
+  filepath: data/05_model_input/scaled_inference.csv
+  metadata: {kedro-viz: {layer: model_input}}
+
+inference_predictions:
+  type: json.JSONDataset
+  filepath: data/07_model_output/inference_predictions.json
+  metadata: {kedro-viz: {layer: model_output}}

@@ -1,0 +1,16 @@
+.git/
+.venv/
+.ruff_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+notebooks/
+tests/
+.viz/
+*.log
+data/02_intermediate/
+data/03_primary/
+data/05_model_input/
+data/07_model_output/
+data/08_reporting/
