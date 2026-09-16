@@ -5,14 +5,23 @@ import pytest
 PARAMS_COLUMNS = {
     "target": "OUTCOME",
     "raw_numerical": [
-        "PREGNANCIES", "GLUCOSE", "BLOODPRESSURE", "SKINTHICKNESS",
-        "INSULIN", "BMI", "DIABETESPEDIGREEFUNCTION", "AGE",
+        "PREGNANCIES",
+        "GLUCOSE",
+        "BLOODPRESSURE",
+        "SKINTHICKNESS",
+        "INSULIN",
+        "BMI",
+        "DIABETESPEDIGREEFUNCTION",
+        "AGE",
     ],
     "zero_as_missing": ["GLUCOSE", "BLOODPRESSURE", "SKINTHICKNESS", "INSULIN", "BMI"],
     "engineered_numerical": ["NEW_GLUCOSE_INSULIN", "NEW_GLUCOSE_PREGNANCIES"],
     "engineered_categorical": [
-        "NEW_AGE_CAT", "NEW_BMI", "NEW_GLUCOSE",
-        "NEW_AGE_BMI_NOM", "NEW_AGE_GLUCOSE_NOM",
+        "NEW_AGE_CAT",
+        "NEW_BMI",
+        "NEW_GLUCOSE",
+        "NEW_AGE_BMI_NOM",
+        "NEW_AGE_GLUCOSE_NOM",
     ],
 }
 

@@ -26,6 +26,7 @@ diabetes = "diabetes.__main__:main"
 
 [project.optional-dependencies]
 dev = [
+    "black~=25.0",
     "pytest~=8.0",
     "httpx>=0.27",
     "ruff~=0.12.0",
@@ -45,7 +46,11 @@ project_name = "diabetes-prediction"
 kedro_init_version = "1.2.0"
 source_dir = "src"
 
+[tool.black]
+line-length = 88
+
 [tool.ruff]
+# Same line length as black; ruff lints, black formats.
 line-length = 88
 
 [tool.ruff.lint]

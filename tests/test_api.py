@@ -1,5 +1,8 @@
 import inspect
+import json
+from pathlib import Path
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -7,8 +10,14 @@ from diabetes import api
 from diabetes.api import app
 
 PATIENT = {
-    "Pregnancies": 6, "Glucose": 148, "BloodPressure": 72, "SkinThickness": 35,
-    "Insulin": 0, "BMI": 33.6, "DiabetesPedigreeFunction": 0.627, "Age": 50,
+    "Pregnancies": 6,
+    "Glucose": 148,
+    "BloodPressure": 72,
+    "SkinThickness": 35,
+    "Insulin": 0,
+    "BMI": 33.6,
+    "DiabetesPedigreeFunction": 0.627,
+    "Age": 50,
 }
 
 
@@ -35,7 +44,9 @@ def test_predict_returns_a_calibrated_probability(client):
 
 
 def test_predict_rejects_an_unknown_field(client):
-    assert client.post("/predict", json={**PATIENT, "Cholesterol": 1}).status_code == 422
+    assert (
+        client.post("/predict", json={**PATIENT, "Cholesterol": 1}).status_code == 422
+    )
 
 
 def test_predict_rejects_an_out_of_range_value(client):
@@ -77,7 +88,9 @@ def test_bootstrap_runs_exactly_once(monkeypatch):
 def test_requests_never_open_a_kedro_session(client, monkeypatch):
     """Artifacts are unpickled once at startup; serving must not touch Kedro."""
     opened = []
-    monkeypatch.setattr(api.KedroSession, "create", lambda **kwargs: opened.append(kwargs))
+    monkeypatch.setattr(
+        api.KedroSession, "create", lambda **kwargs: opened.append(kwargs)
+    )
 
     for _ in range(3):
         assert client.post("/predict", json=PATIENT).status_code == 200
@@ -92,3 +105,26 @@ def test_post_handlers_are_coroutines():
     thread, so a slow prediction cannot stall the event loop."""
     assert inspect.iscoroutinefunction(api.predict)
     assert inspect.iscoroutinefunction(api.predict_batch)
+
+
+# ---- Parity with the batch pipeline ---------------------------------------
+
+
+def test_api_matches_the_batch_pipeline(client):
+    """The strongest guarantee in the project: scoring the same rows over HTTP
+    and through `kedro run --pipeline inference` must agree to the digit."""
+    project = Path(__file__).resolve().parents[1]
+    batch_path = project / "data" / "07_model_output" / "inference_predictions.json"
+    if not batch_path.exists():
+        pytest.skip("run `kedro run` first to produce batch predictions")
+
+    batch = json.loads(batch_path.read_text())[:20]
+    raw = pd.read_csv(project / "data" / "01_raw" / "diabetes-dataset-inference.csv")
+    payload = raw.drop(columns=["Outcome"]).head(20).to_dict("records")
+
+    response = client.post("/predict/batch", json={"instances": payload})
+    assert response.status_code == 200
+
+    for over_http, from_batch in zip(response.json(), batch, strict=True):
+        assert over_http["probability"] == pytest.approx(from_batch["probability"])
+        assert over_http["prediction"] == from_batch["prediction"]

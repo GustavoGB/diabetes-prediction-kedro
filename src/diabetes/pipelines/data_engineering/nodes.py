@@ -85,7 +85,9 @@ def fit_imputer(
     cols = columns["zero_as_missing"]
     train = _train_rows(data)
     scaler = RobustScaler().fit(train[cols])
-    knn = KNNImputer(n_neighbors=params["n_neighbors"]).fit(scaler.transform(train[cols]))
+    knn = KNNImputer(n_neighbors=params["n_neighbors"]).fit(
+        scaler.transform(train[cols])
+    )
     return {"columns": cols, "scaler": scaler, "knn": knn}
 
 
@@ -121,9 +123,7 @@ def apply_outlier_bounds(
     return df
 
 
-def engineer_features(
-    data: pd.DataFrame, params: dict[str, Any]
-) -> pd.DataFrame:
+def engineer_features(data: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
     """The notebook's derived columns. Stateless, so no fitted artifact."""
     df = data.copy()
     df["NEW_AGE_CAT"] = np.where(df["AGE"] >= params["senior_age"], "senior", "mature")

@@ -75,8 +75,12 @@ def tune_model(master_table: pd.DataFrame, params: dict[str, Any]) -> dict[str, 
         n_jobs=-1,
     ).fit(train[features], train[target])
 
-    logger.info("best params: %s (cv %s=%.4f)", search.best_params_,
-                params["scoring"], search.best_score_)
+    logger.info(
+        "best params: %s (cv %s=%.4f)",
+        search.best_params_,
+        params["scoring"],
+        search.best_score_,
+    )
     return {
         "name": f"{params['class_path'].rsplit('.', 1)[-1]} (tuned)",
         "estimator": search.best_estimator_,
@@ -88,9 +92,7 @@ def tune_model(master_table: pd.DataFrame, params: dict[str, Any]) -> dict[str, 
     }
 
 
-def evaluate_model(
-    model: dict[str, Any], master_table: pd.DataFrame
-) -> dict[str, Any]:
+def evaluate_model(model: dict[str, Any], master_table: pd.DataFrame) -> dict[str, Any]:
     """Per-split metrics.
 
     Note the argument order ``(y_true, y_pred)``: the notebook had it reversed

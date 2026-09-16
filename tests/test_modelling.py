@@ -38,17 +38,24 @@ def test_artifact_carries_its_feature_contract(master_table):
 def test_estimator_class_comes_from_config(master_table):
     from sklearn.tree import DecisionTreeClassifier
 
-    swapped = {**MODEL_PARAMS, "class_path": "sklearn.tree.DecisionTreeClassifier",
-               "init_args": {"random_state": 46}}
-    assert isinstance(nodes.train_model(master_table, swapped)["estimator"],
-                      DecisionTreeClassifier)
+    swapped = {
+        **MODEL_PARAMS,
+        "class_path": "sklearn.tree.DecisionTreeClassifier",
+        "init_args": {"random_state": 46},
+    }
+    assert isinstance(
+        nodes.train_model(master_table, swapped)["estimator"], DecisionTreeClassifier
+    )
 
 
 def test_evaluate_reports_every_split(master_table):
-    metrics = nodes.evaluate_model(nodes.train_model(master_table, MODEL_PARAMS),
-                                   master_table)
+    metrics = nodes.evaluate_model(
+        nodes.train_model(master_table, MODEL_PARAMS), master_table
+    )
     assert set(metrics) >= {"model", "train", "test"}
-    assert metrics["train"]["n_samples"] + metrics["test"]["n_samples"] == len(master_table)
+    assert metrics["train"]["n_samples"] + metrics["test"]["n_samples"] == len(
+        master_table
+    )
     for split in ("train", "test"):
         assert 0.0 <= metrics[split]["roc_auc"] <= 1.0
 
@@ -57,8 +64,10 @@ def test_selection_promotes_the_better_holdout_score(master_table):
     baseline = nodes.train_model(master_table, MODEL_PARAMS)
     tuned = {**baseline, "name": "challenger"}
     winner = nodes.select_best_model(
-        baseline, tuned,
-        {"test": {"roc_auc": 0.60}}, {"test": {"roc_auc": 0.90}},
+        baseline,
+        tuned,
+        {"test": {"roc_auc": 0.60}},
+        {"test": {"roc_auc": 0.90}},
         {"metric": "roc_auc", "split": "test"},
     )
     assert winner["name"] == "challenger"

@@ -39,7 +39,9 @@ def test_fit_nodes_only_see_the_train_split(raw_frame, columns):
     poisoned.loc[poisoned["SPLIT"] == "test", "AGE"] = 10_000
 
     featured = nodes.engineer_features(
-        nodes.apply_imputer(split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})),
+        nodes.apply_imputer(
+            split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})
+        ),
         {
             "senior_age": 50,
             "bmi_bins": [0, 18.5, 24.9, 29.9, 100],
@@ -69,7 +71,9 @@ def test_encoder_schema_is_stable_for_a_single_row(raw_frame, columns, fe_params
     narrower matrix. The fitted encoder must always emit the same columns."""
     split = _prepared(raw_frame, columns)
     featured = nodes.engineer_features(
-        nodes.apply_imputer(split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})),
+        nodes.apply_imputer(
+            split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})
+        ),
         fe_params,
     )
     encoder = nodes.fit_encoder(featured, columns)
@@ -82,7 +86,9 @@ def test_encoder_schema_is_stable_for_a_single_row(raw_frame, columns, fe_params
 def test_encoder_ignores_unseen_categories(raw_frame, columns, fe_params):
     split = _prepared(raw_frame, columns)
     featured = nodes.engineer_features(
-        nodes.apply_imputer(split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})),
+        nodes.apply_imputer(
+            split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})
+        ),
         fe_params,
     )
     encoder = nodes.fit_encoder(featured, columns)

@@ -1,4 +1,4 @@
-.PHONY: help install train infer viz api test lint docker-build docker-up docker-down
+.PHONY: help install train infer viz api test format lint docker-build docker-up docker-down
 .DEFAULT_GOAL := help
 
 install:  ## Create the venv and install everything (incl. dev extras)
@@ -19,16 +19,20 @@ api:  ## Serve the FastAPI app on :8000
 test:  ## Run the test suite
 	uv run pytest -q
 
-lint:  ## Lint with ruff
+format:  ## Format with black
+	uv run black src tests
+
+lint:  ## Check formatting and lint
+	uv run black --check src tests
 	uv run ruff check src tests
 
-docker-build:
+docker-build:  ## Build the Docker image
 	docker compose build
 
-docker-up:
+docker-up:  ## Start the API container on :8000
 	docker compose up -d
 
-docker-down:
+docker-down:  ## Stop the API container
 	docker compose down
 
 help:  ## List available targets
