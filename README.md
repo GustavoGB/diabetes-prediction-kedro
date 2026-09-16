@@ -135,9 +135,19 @@ several gradient-boosting backends.
 uv run uvicorn diabetes.api:app --reload    # then open localhost:8000/docs
 ```
 
-Artifacts are loaded from the Kedro catalog **once at startup**, and scoring
-calls the same node functions the batch pipeline uses — the HTTP path and the
-`kedro run --pipeline inference` path cannot diverge.
+Scoring calls the same node functions the batch pipeline uses, so the HTTP path
+and the `kedro run --pipeline inference` path cannot diverge.
+
+Two things keep it fast under load:
+
+- **`bootstrap_project` runs exactly once per process**, behind a double-checked
+  lock, and a single `KedroSession` is opened at startup to read the parameters
+  and unpickle the artifacts. No request pays for a session, a config load or a
+  disk read of the model. If the API starts before the first `kedro run`,
+  `/ready` returns 503 and retries the load — no restart needed.
+- **POST handlers are `async`** and hand the blocking, CPU-bound scoring chain to
+  a worker thread via `run_in_threadpool`, so a slow prediction cannot stall the
+  event loop while other requests are being parsed and validated.
 
 | method | route | purpose |
 |---|---|---|
@@ -190,7 +200,7 @@ src/diabetes/
   pipeline_registry.py
   pipelines/{data_engineering,modelling,inference}/
 notebooks/            the original exploratory notebook, unchanged
-tests/                21 tests: uv run pytest
+tests/                24 tests: uv run pytest
 ```
 
 Data layers follow the Kedro convention: `01_raw → 02_intermediate → 03_primary
@@ -203,13 +213,14 @@ and runs.
 ## Tests
 
 ```bash
-uv run pytest -q     # 21 passed
+uv run pytest -q     # 24 passed
 uv run ruff check src tests
 ```
 
 The suite targets the contracts that matter rather than line coverage: fitted
 artifacts never see test rows, the encoder emits an identical schema for a
 single row and for an unseen category, the model artifact never treats `SPLIT`
-or the target as a feature, and the API rejects malformed payloads.
+or the target as a feature, the API rejects malformed payloads, and serving
+never re-bootstraps Kedro or reopens a session.
 
 Note `tests/test_api.py` expects `kedro run` to have produced artifacts first.

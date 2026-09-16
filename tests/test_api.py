@@ -1,6 +1,9 @@
+import inspect
+
 import pytest
 from fastapi.testclient import TestClient
 
+from diabetes import api
 from diabetes.api import app
 
 PATIENT = {
@@ -52,3 +55,40 @@ def test_dataset_endpoint_paginates(client):
 
 def test_unknown_dataset_is_404(client):
     assert client.get("/datasets/secrets").status_code == 404
+
+
+# ---- Startup cost ---------------------------------------------------------
+
+
+def test_bootstrap_runs_exactly_once(monkeypatch):
+    """`bootstrap_project` re-reads pyproject and re-configures the project, so
+    it must never run per request."""
+    calls = []
+    monkeypatch.setattr(api, "bootstrap_project", calls.append)
+    monkeypatch.setattr(api, "configure_project", lambda name: None)
+    monkeypatch.setattr(api, "_bootstrapped", False)
+
+    for _ in range(3):
+        api._ensure_bootstrap()
+
+    assert len(calls) == 1
+
+
+def test_requests_never_open_a_kedro_session(client, monkeypatch):
+    """Artifacts are unpickled once at startup; serving must not touch Kedro."""
+    opened = []
+    monkeypatch.setattr(api.KedroSession, "create", lambda **kwargs: opened.append(kwargs))
+
+    for _ in range(3):
+        assert client.post("/predict", json=PATIENT).status_code == 200
+    client.get("/ready")
+    client.get("/datasets")
+
+    assert opened == []
+
+
+def test_post_handlers_are_coroutines():
+    """POST endpoints are async and hand the blocking scoring chain to a worker
+    thread, so a slow prediction cannot stall the event loop."""
+    assert inspect.iscoroutinefunction(api.predict)
+    assert inspect.iscoroutinefunction(api.predict_batch)
