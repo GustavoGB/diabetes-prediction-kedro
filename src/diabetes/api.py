@@ -98,11 +98,12 @@ def _require_state() -> dict[str, Any]:
     try:
         _ensure_state()
     except Exception as exc:
+        # The cause (paths, stack) is logged, not returned: a 503 body is not
+        # the place to disclose the server's filesystem layout.
         logger.error("artifacts unavailable — run `kedro run` first: %s", exc)
         raise HTTPException(
             status_code=503,
-            detail=f"model artifacts not loaded ({type(exc).__name__}: {exc}); "
-            "run `kedro run` first",
+            detail="model artifacts are not loaded; run `kedro run` first",
         ) from exc
     return state
 

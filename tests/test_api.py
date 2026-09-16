@@ -128,3 +128,19 @@ def test_api_matches_the_batch_pipeline(client):
     for over_http, from_batch in zip(response.json(), batch, strict=True):
         assert over_http["probability"] == pytest.approx(from_batch["probability"])
         assert over_http["prediction"] == from_batch["prediction"]
+
+
+def test_unloaded_artifacts_report_503_without_leaking_paths(client, monkeypatch):
+    """Before the first `kedro run` the service must say so plainly — and must
+    not echo the server's filesystem layout back to the caller."""
+
+    def boom():
+        raise RuntimeError("/srv/secret/path/production_model.pkl is missing")
+
+    monkeypatch.setattr(api, "_ensure_state", boom)
+
+    for response in (client.get("/ready"), client.post("/predict", json=PATIENT)):
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        assert "kedro run" in detail
+        assert "/srv/secret/path" not in detail
