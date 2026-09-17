@@ -40,40 +40,51 @@ master_table:
   metadata: {kedro-viz: {layer: model_input}}
 
 # -------------------------------------------------- fitted preprocessing artifacts
+# Fitted transformers and the two candidate models carry NO kedro-viz layer.
+# Layers describe the DATA flow, and these sit outside it in both directions:
+# the encoder is fitted FROM feature data and then used TO produce it. Declaring
+# them made the layer graph cyclic (feature -> models -> feature), and kedro-viz
+# answers a cycle by disabling the layer bands altogether — so labelling every
+# dataset cost us the visualisation the labels exist for. Only the promoted
+# production_model keeps the models layer, as the stage that feeds predictions.
+#
+# The five artifacts inference loads are versioned as a SET: a rollback is only
+# coherent if the model and the transformers that shaped its features come from
+# the same run. Kedro stamps one save_version per run, so they stay together and
+# a rollback is one directory, not a reassembly job.
 imputer:
   type: pickle.PickleDataset
   filepath: data/06_models/imputer.pkl
-  metadata: {kedro-viz: {layer: models}}
+  versioned: true
 
 outlier_bounds:
   type: json.JSONDataset
   filepath: data/06_models/outlier_bounds.json
-  metadata: {kedro-viz: {layer: models}}
+  versioned: true
 
 encoder:
   type: pickle.PickleDataset
   filepath: data/06_models/encoder.pkl
-  metadata: {kedro-viz: {layer: models}}
+  versioned: true
 
 scaler:
   type: pickle.PickleDataset
   filepath: data/06_models/scaler.pkl
-  metadata: {kedro-viz: {layer: models}}
+  versioned: true
 
 # ---------------------------------------------------------------------- modelling
 baseline_model:
   type: pickle.PickleDataset
   filepath: data/06_models/baseline_model.pkl
-  metadata: {kedro-viz: {layer: models}}
 
 tuned_model:
   type: pickle.PickleDataset
   filepath: data/06_models/tuned_model.pkl
-  metadata: {kedro-viz: {layer: models}}
 
 production_model:
   type: pickle.PickleDataset
   filepath: data/06_models/production_model.pkl
+  versioned: true
   metadata: {kedro-viz: {layer: models}}
 
 modelling_data_quality:
