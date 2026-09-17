@@ -290,9 +290,15 @@ def read_dataset(
     try:
         data = catalog.load(name)
     except Exception as exc:
+        # Same rule as the 503 above: the DatasetError names the absolute path
+        # it looked for, which belongs in the log, not in a client response.
+        logger.error("dataset %s could not be loaded: %s", name, exc)
         raise HTTPException(
             status_code=404,
-            detail=f"dataset '{name}' has not been produced yet: {exc}",
+            detail=(
+                f"dataset '{name}' has not been produced yet; "
+                "run `kedro run` to generate it"
+            ),
         ) from exc
 
     records = data.to_dict("records") if isinstance(data, pd.DataFrame) else data

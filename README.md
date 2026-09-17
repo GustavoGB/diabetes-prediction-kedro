@@ -442,7 +442,7 @@ takes ~2 minutes; the dependency layer is cached afterwards.
 ## 7. Run the tests
 
 ```bash
-uv run pytest -q          # 51 passed
+uv run pytest -q          # 56 passed
 uv run black src tests scripts    # format   (make format)
 uv run black --check src tests scripts && uv run ruff check src tests scripts   # (make lint)
 ```
@@ -452,12 +452,12 @@ tests will report the 503 and the parity test will skip.
 
 | file | tests | covers |
 |---|---|---|
-| `test_data_engineering.py` | 9 | sentinel zeros, missing target/columns, fit-nodes never see test rows, encoder schema stability, unseen categories, outlier clipping, stratification |
+| `test_data_engineering.py` | 11 | sentinel zeros, missing target/columns, fit-nodes never see test rows, encoder schema stability, unseen categories are logged, values above the top bin still get a band, outlier clipping, stratification |
 | `test_modelling.py` | 4 | the feature contract, config-driven estimator swap, per-split metrics, promotion by holdout score |
 | `test_inference.py` | 6 | the DataFrame/JSON adapter, threshold behaviour, feature selection, row-index preservation |
 | `test_pipelines.py` | 12 | registry names, unique node names, inference reuses the *same* transform functions, inference never fits, every artifact is persisted and reused, no orphan catalog entries, viz layers, both branches are validated, validation actually gates |
-| `test_validation.py` | 7 | a healthy batch passes untouched, out-of-range values fail, a degraded feed fails *even though every row is valid*, class-imbalance drift fails, truncation fails, advisory mode, absent columns skipped |
-| `test_api.py` | 13 | health/ready, validation, batch, dataset endpoints, bootstrap idempotence, no session per request, async handlers, 503 without leaking paths, **API-vs-batch parity** |
+| `test_validation.py` | 9 | a healthy batch passes untouched, out-of-range values fail, a degraded feed fails *even though every row is valid*, class-imbalance drift fails, truncation fails, advisory mode, absent columns skipped, **the shipped suite accepts an unlabelled batch** |
+| `test_api.py` | 14 | health/ready, validation, batch, dataset endpoints, bootstrap idempotence, no session per request, async handlers, 503 *and* 404 without leaking paths, **API-vs-batch parity** |
 
 The suite targets contracts rather than line coverage. The two that matter most:
 
@@ -480,7 +480,7 @@ committed.
 
 | job | what it does | why it is separate |
 |---|---|---|
-| **Format, lint, tests** | `black --check`, `ruff check`, `kedro run`, then `pytest -q` (51 tests) | fastest feedback; a formatting slip should not wait on Docker |
+| **Format, lint, tests** | `black --check`, `ruff check`, `kedro run`, then `pytest -q` (56 tests) | fastest feedback; a formatting slip should not wait on Docker |
 | **Pipeline end to end** | `kedro run`, then asserts the *outputs* on disk | exit code 0 only proves Kedro did not raise — see below |
 | **Image builds and serves** | `docker build`, start the container, poll `/ready`, score a patient over HTTP | the only job that exercises the shipped artefact, not the source tree |
 
@@ -825,6 +825,10 @@ transform chain, and writes `data/07_model_output/inference_predictions.json`.
 
 The cleaned inference batch is held to the **same expectation suite as the
 training data**, which is what turns a passive pipeline into a drift check.
+Expectations naming a column that the batch does not carry are skipped, and
+table-level ones are narrowed to the columns present — so a batch with no
+`OUTCOME` at all, which is the normal case in production, is validated rather
+than rejected for the label it is not supposed to have.
 
 ### The API
 
@@ -871,7 +875,7 @@ with a pipeline that has to score unseen data.
 |---|---|---|---|
 | 1 | `KNNImputer` and both `RobustScaler`s fit on all 652 rows **before** `train_test_split` | fit on the train split only, persisted as catalog artifacts | Test values fed the neighbour search. `Insulin` is 48% imputed and `SkinThickness` 29%, so roughly half of two features was contaminated. |
 | 2 | Outlier fences computed from the full dataset (and applied to `Outcome`) | fit on train rows, features only | Same leak; capping the target is meaningless. |
-| 3 | `pd.get_dummies` on the full frame | `OneHotEncoder(handle_unknown="ignore")` fitted and persisted | The dummy *schema* was defined by whatever data was present. Replaying the notebook's chain on the inference CSV yields **24 columns, not 25** — `NEW_AGE_GLUCOSE_NOM_lowsenior` vanishes. A single-row API request would produce far fewer. Unseen levels now encode as all-zeros against a fixed schema. |
+| 3 | `pd.get_dummies` on the full frame | `OneHotEncoder(handle_unknown="ignore")` fitted and persisted | The dummy *schema* was defined by whatever data was present. Replaying the notebook's chain on the inference CSV yields **24 columns, not 25** — `NEW_AGE_GLUCOSE_NOM_lowsenior` vanishes. A single-row API request would produce far fewer. Unseen levels now encode as all-zeros against a fixed schema — and are logged, because an all-zero group is otherwise indistinguishable from a real row to everything downstream. |
 | 4 | `recall_score(y_pred, y_test)` — arguments reversed in every metric call | `(y_true, y_pred)` | The notebook's "Recall" column is actually precision, and vice versa. |
 | 5 | `roc_auc_score` fed hard 0/1 labels | fed `predict_proba(...)[:, 1]` | AUC on thresholded labels is not AUC. |
 | 6 | Unstratified split | `stratify=y` | 35% positive at n=652; train drifted to 36.8% positive. |
@@ -947,7 +951,7 @@ src/diabetes/
 scripts/
   data_quality_demo.py   what each validation layer catches (make quality)
 notebooks/            the original exploratory notebook, unchanged
-tests/                51 tests
+tests/                56 tests
 Dockerfile            trains during build; serves uvicorn
 docker-compose.yml    one api service on :8000
 Makefile              make help

@@ -34,7 +34,7 @@ jobs:
 
       # Must precede pytest. tests/test_api.py exercises the real FastAPI app,
       # which loads the fitted artifacts from data/06_models — gitignored, so a
-      # fresh checkout has none and five API tests fail on 503. The *default*
+      # fresh checkout has none and the API tests fail on 503. The *default*
       # pipeline is required, not --pipeline training: the parity test compares
       # HTTP scores against data/07_model_output/inference_predictions.json and
       # silently skips if the inference pipeline has not run.

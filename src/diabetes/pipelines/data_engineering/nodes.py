@@ -128,9 +128,15 @@ def engineer_features(data: pd.DataFrame, params: dict[str, Any]) -> pd.DataFram
     df = data.copy()
     df["NEW_AGE_CAT"] = np.where(df["AGE"] >= params["senior_age"], "senior", "mature")
 
-    bmi = pd.cut(df["BMI"], bins=params["bmi_bins"], labels=params["bmi_labels"])
+    bmi = pd.cut(
+        df["BMI"],
+        bins=[-np.inf, *params["bmi_bins"], np.inf],
+        labels=params["bmi_labels"],
+    )
     glucose = pd.cut(
-        df["GLUCOSE"], bins=params["glucose_bins"], labels=params["glucose_labels"]
+        df["GLUCOSE"],
+        bins=[-np.inf, *params["glucose_bins"], np.inf],
+        labels=params["glucose_labels"],
     )
     df["NEW_BMI"] = bmi.astype(str)
     df["NEW_GLUCOSE"] = glucose.astype(str)
@@ -171,7 +177,38 @@ def apply_encoder(data: pd.DataFrame, encoder: dict[str, Any]) -> pd.DataFrame:
         columns=fitted.get_feature_names_out(cats),
         index=df.index,
     )
+    _warn_on_unseen_categories(df, cats, dummies, fitted)
     return pd.concat([df.drop(columns=cats), dummies], axis=1)
+
+
+def _warn_on_unseen_categories(
+    df: pd.DataFrame, cats: list[str], dummies: pd.DataFrame, fitted: Any
+) -> None:
+    """Log the rows whose category the encoder never saw while fitting.
+
+    ``handle_unknown="ignore"`` keeps the feature schema stable, which is what
+    inference needs, but it does so by encoding an unseen level as all zeros.
+    That is indistinguishable from a legitimate row to every layer downstream:
+    the model still scores it, confidently. Pydantic cannot catch it either —
+    each field is individually in range; it is the *combination* that never
+    occurred in training. So it is at least logged.
+    """
+    for column, levels in zip(cats, fitted.categories_):
+        group = [name for name in dummies.columns if name.startswith(f"{column}_")]
+        if not group:
+            continue
+        unseen = dummies.index[dummies[group].sum(axis=1) == 0]
+        if len(unseen) == 0:
+            continue
+        observed = sorted(set(df.loc[unseen, column].astype(str)) - set(levels))
+        logger.warning(
+            "%s: %d row(s) carry a level the encoder never saw (%s); "
+            "the whole %s group encodes as zeros",
+            column,
+            len(unseen),
+            ", ".join(observed) or "unknown",
+            column,
+        )
 
 
 def fit_scaler(data: pd.DataFrame, columns: dict[str, Any]) -> dict[str, Any]:
