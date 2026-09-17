@@ -48,16 +48,42 @@ def _build_suite(name: str, expectations: list[dict[str, Any]], columns: set[str
 
     Skipping is deliberate: the same suite then guards the labelled modelling
     CSV and an unlabelled inference payload, exactly as ``clean_data`` does.
+    Column-level expectations are dropped when their column is absent;
+    table-level ones (``column_set``, ``column_list``) are narrowed to the
+    columns present, and dropped only if none of them is.
     An expectation suite must be registered with a context before it can run.
     """
     suite = _context().suites.add_or_update(gx.ExpectationSuite(name=name))
     for entry in expectations:
-        kwargs = entry.get("kwargs", {})
+        kwargs = dict(entry.get("kwargs", {}))
+
         column = kwargs.get("column")
         if column is not None and column not in columns:
             logger.debug("skipping %s: column %s absent", entry["type"], column)
             continue
-        suite.add_expectation(getattr(gx.expectations, entry["type"])(**kwargs))
+
+        # Table-level expectations name their columns under column_set or
+        # column_list, not column. Narrowing them to the columns actually
+        # present is what lets one suite guard both the labelled modelling CSV
+        # and an unlabelled inference payload: without this, the OUTCOME in
+        # column_set fails every batch that legitimately has no label.
+        for key in ("column_set", "column_list"):
+            declared = kwargs.get(key)
+            if declared is None:
+                continue
+            present = [name_ for name_ in declared if name_ in columns]
+            if not present:
+                logger.debug("skipping %s: no declared column present", entry["type"])
+                break
+            if len(present) != len(declared):
+                logger.debug(
+                    "narrowing %s: %s absent",
+                    entry["type"],
+                    sorted(set(declared) - set(present)),
+                )
+            kwargs[key] = present
+        else:
+            suite.add_expectation(getattr(gx.expectations, entry["type"])(**kwargs))
     return suite
 
 

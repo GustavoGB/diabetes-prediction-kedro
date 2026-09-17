@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pytest
 
@@ -32,7 +34,7 @@ def test_clean_data_rejects_a_missing_feature(raw_frame, columns):
         nodes.clean_data(raw_frame.drop(columns=["Glucose"]), columns)
 
 
-def test_fit_nodes_only_see_the_train_split(raw_frame, columns):
+def test_fit_nodes_only_see_the_train_split(raw_frame, columns, fe_params):
     """Leakage guard: an absurd test-only value must not move the fitted scaler."""
     split = _prepared(raw_frame, columns)
     poisoned = split.copy()
@@ -42,15 +44,7 @@ def test_fit_nodes_only_see_the_train_split(raw_frame, columns):
         nodes.apply_imputer(
             split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})
         ),
-        {
-            "senior_age": 50,
-            "bmi_bins": [0, 18.5, 24.9, 29.9, 100],
-            "bmi_labels": ["Underweight", "Healthy", "Overweight", "Obese"],
-            "glucose_bins": [0, 140, 200, 300],
-            "glucose_labels": ["Normal", "Prediabetes", "Diabetes"],
-            "glucose_band_edges": [69, 99, 125],
-            "glucose_band_labels": ["low", "normal", "hidden", "high"],
-        },
+        fe_params,
     )
     poisoned_featured = featured.copy()
     poisoned_featured.loc[poisoned_featured["SPLIT"] == "test", "AGE"] = 10_000
@@ -120,3 +114,57 @@ def test_split_is_stratified(raw_frame, columns):
     rates = split.groupby("SPLIT")["OUTCOME"].mean()
     assert abs(rates["train"] - rates["test"]) < 0.15
     assert set(split["SPLIT"]) == {"train", "test"}
+
+
+def test_a_value_above_the_top_bin_still_gets_a_band(raw_frame, columns, fe_params):
+    """Closed outer bin edges turned a legal value into the string "nan".
+
+    The fitted Tukey fence for GLUCOSE caps at ~333, but the top bin used to
+    end at 300. Anything in between survived clipping, fell out of pd.cut as
+    NaN, stringified to "nan" and one-hot encoded to all zeros — a silently
+    feature-less row that the model still scored.
+    """
+    split = _prepared(raw_frame, columns)
+    split.loc[split.index[0], "GLUCOSE"] = 320
+    split.loc[split.index[1], "BMI"] = 120
+
+    featured = nodes.engineer_features(
+        nodes.apply_imputer(
+            split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})
+        ),
+        fe_params,
+    )
+
+    assert featured.loc[split.index[0], "NEW_GLUCOSE"] == "Diabetes"
+    assert featured.loc[split.index[1], "NEW_BMI"] == "Obese"
+    assert "nan" not in set(featured["NEW_GLUCOSE"]) | set(featured["NEW_BMI"])
+
+
+def test_an_unseen_category_is_logged_not_swallowed(
+    raw_frame, columns, fe_params, caplog
+):
+    """handle_unknown="ignore" keeps the schema stable by zeroing the group.
+
+    That is right for inference, but nothing downstream can tell such a row
+    from a real one — so the encoder has to say so.
+    """
+    split = _prepared(raw_frame, columns)
+    featured = nodes.engineer_features(
+        nodes.apply_imputer(
+            split, nodes.fit_imputer(split, columns, {"n_neighbors": 3})
+        ),
+        fe_params,
+    )
+    encoder = nodes.fit_encoder(featured, columns)
+
+    unseen = featured.copy()
+    unseen["NEW_BMI"] = "Hyperdense"
+
+    with caplog.at_level(logging.WARNING):
+        encoded = nodes.apply_encoder(unseen, encoder)
+
+    group = [col for col in encoded.columns if col.startswith("NEW_BMI_")]
+    assert group, "the schema must stay stable"
+    assert (encoded[group].sum(axis=1) == 0).all(), "unseen levels encode as zeros"
+    assert "Hyperdense" in caplog.text
+    assert "NEW_BMI" in caplog.text

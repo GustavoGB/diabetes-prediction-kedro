@@ -27,9 +27,9 @@ PARAMS_COLUMNS = {
 
 FE_PARAMS = {
     "senior_age": 50,
-    "bmi_bins": [0, 18.5, 24.9, 29.9, 100],
+    "bmi_bins": [18.5, 24.9, 29.9],
     "bmi_labels": ["Underweight", "Healthy", "Overweight", "Obese"],
-    "glucose_bins": [0, 140, 200, 300],
+    "glucose_bins": [140, 200],
     "glucose_labels": ["Normal", "Prediabetes", "Diabetes"],
     "glucose_band_edges": [69, 99, 125],
     "glucose_band_labels": ["low", "normal", "hidden", "high"],

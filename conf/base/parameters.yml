@@ -37,9 +37,14 @@ outliers:
 
 feature_engineering:
   senior_age: 50
-  bmi_bins: [0, 18.5, 24.9, 29.9, 100]
+  # Inner edges only: the nodes add -inf and +inf at both ends, as the bands
+  # below already did. Closed outer edges (the old [0, ..., 100] / [0, ..., 300])
+  # were narrower than the fitted Tukey fences — glucose caps at 333.6 but the
+  # top bin ended at 300 — so a legal value could fall out of pd.cut as NaN,
+  # stringify to "nan" and silently one-hot to all zeros.
+  bmi_bins: [18.5, 24.9, 29.9]
   bmi_labels: [Underweight, Healthy, Overweight, Obese]
-  glucose_bins: [0, 140, 200, 300]
+  glucose_bins: [140, 200]
   glucose_labels: [Normal, Prediabetes, Diabetes]
   glucose_band_edges: [69, 99, 125]
   glucose_band_labels: [low, normal, hidden, high]
@@ -79,8 +84,10 @@ inference:
 # Great Expectations suites. Pydantic validates one request at the HTTP boundary;
 # these validate a whole batch at the pipeline boundary — row counts, null rates,
 # value ranges and class balance, which no single-row model can express.
-# Expectations whose column is absent are skipped, so one suite guards both the
-# labelled modelling CSV and an unlabelled inference payload.
+# Expectations whose column is absent are skipped, and table-level ones
+# (column_set) are narrowed to the columns present, so one suite guards both the
+# labelled modelling CSV and a genuinely unlabelled inference payload. Missing
+# *feature* columns are caught earlier and more clearly, by clean_data.
 data_quality:
   # Applied to cleaned data on BOTH branches. Running the same suite over
   # training and inference input is the drift check: the inference batch must

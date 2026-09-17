@@ -1,5 +1,7 @@
 # Diabetes Prediction — Kedro
 
+[![CI](https://github.com/GustavoGB/diabetes-prediction-kedro/actions/workflows/ci.yml/badge.svg)](https://github.com/GustavoGB/diabetes-prediction-kedro/actions/workflows/ci.yml)
+
 Production port of `diabetes-prediction.ipynb` into three Kedro pipelines
 (**data engineering → modelling → inference**), served by a FastAPI application
 and packaged as a self-contained Docker image.
@@ -27,13 +29,14 @@ data/01_raw/*.csv ──► data_engineering ──► master_table ──► mo
 5. [Run the API](#5-run-the-api)
 6. [Run with Docker](#6-run-with-docker)
 7. [Run the tests](#7-run-the-tests)
-8. [Troubleshooting](#8-troubleshooting)
-9. [Data quality: Pydantic + Great Expectations](#9-data-quality-pydantic--great-expectations)
-10. [How it is built](#10-how-it-is-built)
-11. [Results](#11-results)
-12. [What changed from the notebook](#12-what-changed-from-the-notebook)
-13. [Configuration reference](#13-configuration-reference)
-14. [Project layout](#14-project-layout)
+8. [Continuous integration](#8-continuous-integration)
+9. [Troubleshooting](#9-troubleshooting)
+10. [Data quality: Pydantic + Great Expectations](#10-data-quality-pydantic--great-expectations)
+11. [How it is built](#11-how-it-is-built)
+12. [Results](#12-results)
+13. [What changed from the notebook](#13-what-changed-from-the-notebook)
+14. [Configuration reference](#14-configuration-reference)
+15. [Project layout](#15-project-layout)
 
 ---
 
@@ -439,9 +442,9 @@ takes ~2 minutes; the dependency layer is cached afterwards.
 ## 7. Run the tests
 
 ```bash
-uv run pytest -q          # 51 passed
-uv run black src tests    # format      (make format)
-uv run black --check src tests && uv run ruff check src tests   # (make lint)
+uv run pytest -q          # 56 passed
+uv run black src tests scripts    # format   (make format)
+uv run black --check src tests scripts && uv run ruff check src tests scripts   # (make lint)
 ```
 
 `tests/test_api.py` needs artifacts on disk — run `kedro run` first, or those
@@ -449,12 +452,12 @@ tests will report the 503 and the parity test will skip.
 
 | file | tests | covers |
 |---|---|---|
-| `test_data_engineering.py` | 9 | sentinel zeros, missing target/columns, fit-nodes never see test rows, encoder schema stability, unseen categories, outlier clipping, stratification |
+| `test_data_engineering.py` | 11 | sentinel zeros, missing target/columns, fit-nodes never see test rows, encoder schema stability, unseen categories are logged, values above the top bin still get a band, outlier clipping, stratification |
 | `test_modelling.py` | 4 | the feature contract, config-driven estimator swap, per-split metrics, promotion by holdout score |
 | `test_inference.py` | 6 | the DataFrame/JSON adapter, threshold behaviour, feature selection, row-index preservation |
 | `test_pipelines.py` | 12 | registry names, unique node names, inference reuses the *same* transform functions, inference never fits, every artifact is persisted and reused, no orphan catalog entries, viz layers, both branches are validated, validation actually gates |
-| `test_validation.py` | 7 | a healthy batch passes untouched, out-of-range values fail, a degraded feed fails *even though every row is valid*, class-imbalance drift fails, truncation fails, advisory mode, absent columns skipped |
-| `test_api.py` | 13 | health/ready, validation, batch, dataset endpoints, bootstrap idempotence, no session per request, async handlers, 503 without leaking paths, **API-vs-batch parity** |
+| `test_validation.py` | 9 | a healthy batch passes untouched, out-of-range values fail, a degraded feed fails *even though every row is valid*, class-imbalance drift fails, truncation fails, advisory mode, absent columns skipped, **the shipped suite accepts an unlabelled batch** |
+| `test_api.py` | 14 | health/ready, validation, batch, dataset endpoints, bootstrap idempotence, no session per request, async handlers, 503 *and* 404 without leaking paths, **API-vs-batch parity** |
 
 The suite targets contracts rather than line coverage. The two that matter most:
 
@@ -463,11 +466,110 @@ The suite targets contracts rather than line coverage. The two that matter most:
 - `test_api_matches_the_batch_pipeline` — the same rows scored over HTTP and via
   `kedro run --pipeline inference` must agree to the digit.
 - `test_a_degraded_feed_fails_even_though_every_row_is_valid` — the case Pydantic
-  structurally cannot see (see [section 9](#9-data-quality-pydantic--great-expectations)).
+  structurally cannot see (see [section 10](#10-data-quality-pydantic--great-expectations)).
 
 ---
 
-## 8. Troubleshooting
+## 8. Continuous integration
+
+Every push to `main` and every pull request targeting `main` runs
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) on GitHub Actions. Three
+jobs run in parallel, on a clean `ubuntu-latest` checkout with no cached
+artifacts — so CI proves the repository is reproducible from nothing but what is
+committed.
+
+| job | what it does | why it is separate |
+|---|---|---|
+| **Format, lint, tests** | `black --check`, `ruff check`, `kedro run`, then `pytest -q` (56 tests) | fastest feedback; a formatting slip should not wait on Docker |
+| **Pipeline end to end** | `kedro run`, then asserts the *outputs* on disk | exit code 0 only proves Kedro did not raise — see below |
+| **Image builds and serves** | `docker build`, start the container, poll `/ready`, score a patient over HTTP | the only job that exercises the shipped artefact, not the source tree |
+
+`concurrency` cancels a superseded run: pushing twice to the same branch kills
+the first run rather than letting both compete for runners.
+
+### Why the pipeline job asserts outputs
+
+A green `kedro run` means no node raised an exception. It does not mean the run
+produced anything usable, so the job then checks, in a plain Python step:
+
+- `data/06_models/production_model.pkl` exists and is non-empty — a model was
+  actually promoted;
+- all three `data/08_reporting/*_quality.json` suites report `"success": true` —
+  the Great Expectations gates passed (see
+  [section 10](#10-data-quality-pydantic--great-expectations));
+- `inference_predictions.json` holds exactly **116** rows — the full held-out
+  batch was scored, not a truncated slice;
+- every probability is in `[0, 1]` and every prediction is `0` or `1`.
+
+### Why the Docker smoke test asserts a band, not a number
+
+The image retrains on build, then promotes one of two candidates by test
+`roc_auc`: LogisticRegression (0.8165) against a tuned RandomForest (0.8115) — a
+margin of 0.005. KNN imputation and a 27-candidate `GridSearchCV` are sensitive
+to the BLAS and scikit-learn build, so a different runner can flip the winner,
+and the same high-risk patient then scores 0.885 instead of 0.968. The test
+therefore asserts `|p - 0.968447| <= 0.15`: wide enough to cover either
+candidate, tight enough to fail if the feature order, the scaler or the model
+regresses. Pinning the exact float would produce a flaky build, not a stronger
+check.
+
+### Running the same checks locally
+
+CI runs nothing you cannot run yourself — this is the whole workflow, in order:
+
+```bash
+uv sync --locked --extra dev                      # fails if uv.lock is out of date
+uv run black --check src tests scripts
+uv run ruff check src tests scripts
+uv run kedro run                                  # must precede pytest
+uv run pytest -q
+docker compose build && docker compose up -d      # only if the image changed
+curl -fsS localhost:8000/ready
+```
+
+`kedro run` has to come before `pytest`: `tests/test_api.py` drives the real
+FastAPI app, which loads the fitted artifacts from `data/06_models` — gitignored,
+so a fresh checkout has none and the API tests would report 503. The *default*
+pipeline is required rather than `--pipeline training`, because the parity test
+compares HTTP scores against `data/07_model_output/inference_predictions.json`
+and silently skips if the inference pipeline never ran.
+
+### Pinned versions
+
+Both actions are pinned to a major tag that resolves — `actions/checkout@v5`
+and `astral-sh/setup-uv@v7`. Neither is the newest release (checkout is on v7,
+setup-uv on 10.x); they are pinned because they work, so a major bump is a
+deliberate PR that CI can vet, not a silent upgrade. Note that astral-sh stopped
+publishing bare major tags after `v7`, so `@v10` would not resolve at all.
+`uv sync --locked` asserts `uv.lock` is current: a dependency added to
+`pyproject.toml` without re-running `uv lock` fails CI instead of installing a
+stale lock behind your back. CI installs Python **3.12** to match the `python:3.12-slim`
+base image in the [Dockerfile](Dockerfile), so the tested interpreter is the
+shipped one. The lockfile covers `>=3.10,<3.14`, so developing on 3.11 locally is
+fine.
+
+### Pull requests
+
+[`.github/pull_request_template.md`](.github/pull_request_template.md) pre-fills
+every PR with the checklist above, so the manual steps CI cannot judge — "is the
+README still true?" — are not forgotten.
+
+To make the checks *mandatory* rather than advisory, protect `main` so a branch
+cannot merge until all three jobs are green. In the GitHub UI: **Settings →
+Branches → Add branch ruleset → Require status checks to pass**, then select the
+three checks by their job names:
+
+- `Format, lint, tests`
+- `Pipeline end to end`
+- `Image builds and serves`
+
+The equivalent `gh api -X PUT .../branches/main/protection` call exists, but the
+REST body is fussy about types and required keys — use the UI unless you are
+scripting it.
+
+---
+
+## 9. Troubleshooting
 
 **`{"detail":"model artifacts are not loaded; run `kedro run` first"}` with HTTP 503**
 The model has not been trained yet. Run `uv run kedro run --pipeline training`.
@@ -498,7 +600,7 @@ A `.telemetry` file with `consent: false` is committed, so it should not.
 
 ---
 
-## 9. Data quality: Pydantic + Great Expectations
+## 10. Data quality: Pydantic + Great Expectations
 
 The project validates at **two different boundaries**, with two different tools,
 because they answer two different questions.
@@ -669,7 +771,7 @@ boundary each rule belongs to and keep it there.
 
 ---
 
-## 10. How it is built
+## 11. How it is built
 
 ### `data_engineering` — 13 nodes, raw CSV → master table
 
@@ -723,6 +825,10 @@ transform chain, and writes `data/07_model_output/inference_predictions.json`.
 
 The cleaned inference batch is held to the **same expectation suite as the
 training data**, which is what turns a passive pipeline into a drift check.
+Expectations naming a column that the batch does not carry are skipped, and
+table-level ones are narrowed to the columns present — so a batch with no
+`OUTCOME` at all, which is the normal case in production, is validated rather
+than rejected for the label it is not supposed to have.
 
 ### The API
 
@@ -739,7 +845,7 @@ it fast under load:
 
 ---
 
-## 11. Results
+## 12. Results
 
 Held-out numbers, stratified 70/30 split, `random_state=17`:
 
@@ -760,7 +866,7 @@ leakage fixes below worked — the estimate generalises.
 
 ---
 
-## 12. What changed from the notebook
+## 13. What changed from the notebook
 
 The notebook is sound exploratory work, but several steps do not survive contact
 with a pipeline that has to score unseen data.
@@ -769,7 +875,7 @@ with a pipeline that has to score unseen data.
 |---|---|---|---|
 | 1 | `KNNImputer` and both `RobustScaler`s fit on all 652 rows **before** `train_test_split` | fit on the train split only, persisted as catalog artifacts | Test values fed the neighbour search. `Insulin` is 48% imputed and `SkinThickness` 29%, so roughly half of two features was contaminated. |
 | 2 | Outlier fences computed from the full dataset (and applied to `Outcome`) | fit on train rows, features only | Same leak; capping the target is meaningless. |
-| 3 | `pd.get_dummies` on the full frame | `OneHotEncoder(handle_unknown="ignore")` fitted and persisted | The dummy *schema* was defined by whatever data was present. Replaying the notebook's chain on the inference CSV yields **24 columns, not 25** — `NEW_AGE_GLUCOSE_NOM_lowsenior` vanishes. A single-row API request would produce far fewer. Unseen levels now encode as all-zeros against a fixed schema. |
+| 3 | `pd.get_dummies` on the full frame | `OneHotEncoder(handle_unknown="ignore")` fitted and persisted | The dummy *schema* was defined by whatever data was present. Replaying the notebook's chain on the inference CSV yields **24 columns, not 25** — `NEW_AGE_GLUCOSE_NOM_lowsenior` vanishes. A single-row API request would produce far fewer. Unseen levels now encode as all-zeros against a fixed schema — and are logged, because an all-zero group is otherwise indistinguishable from a real row to everything downstream. |
 | 4 | `recall_score(y_pred, y_test)` — arguments reversed in every metric call | `(y_true, y_pred)` | The notebook's "Recall" column is actually precision, and vice versa. |
 | 5 | `roc_auc_score` fed hard 0/1 labels | fed `predict_proba(...)[:, 1]` | AUC on thresholded labels is not AUC. |
 | 6 | Unstratified split | `stratify=y` | 35% positive at n=652; train drifted to 36.8% positive. |
@@ -786,7 +892,7 @@ several gradient-boosting backends.
 
 ---
 
-## 13. Configuration reference
+## 14. Configuration reference
 
 Everything tunable lives in `conf/base/parameters.yml`; no code edit is needed.
 
@@ -820,9 +926,12 @@ or machine-specific overrides in `conf/local/` — it is gitignored.
 
 ---
 
-## 14. Project layout
+## 15. Project layout
 
 ```
+.github/
+  workflows/ci.yml    format + lint + tests, pipeline end to end, Docker smoke test
+  pull_request_template.md
 conf/base/
   catalog.yml         every dataset, tagged with its kedro-viz layer
   parameters.yml      column contract, split, model class_path + grid
@@ -839,8 +948,10 @@ src/diabetes/
     data_engineering/{nodes,pipeline}.py
     modelling/{nodes,pipeline}.py
     inference/{nodes,pipeline}.py
+scripts/
+  data_quality_demo.py   what each validation layer catches (make quality)
 notebooks/            the original exploratory notebook, unchanged
-tests/                51 tests
+tests/                56 tests
 Dockerfile            trains during build; serves uvicorn
 docker-compose.yml    one api service on :8000
 Makefile              make help

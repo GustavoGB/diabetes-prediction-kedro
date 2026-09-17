@@ -144,3 +144,29 @@ def test_unloaded_artifacts_report_503_without_leaking_paths(client, monkeypatch
         detail = response.json()["detail"]
         assert "kedro run" in detail
         assert "/srv/secret/path" not in detail
+
+
+def test_a_missing_dataset_reports_404_without_leaking_paths(client, monkeypatch):
+    """The 503 was hardened in db7218f; this route was not.
+
+    It is the state the image ships in: the Dockerfile runs --pipeline training
+    only, so data/07_model_output does not exist in the container and the first
+    /datasets call returned the container's absolute paths.
+    """
+    catalog = api._require_state()["catalog"]
+
+    def boom(name):
+        raise RuntimeError(
+            "Failed while loading data from dataset JSONDataset("
+            "filepath=PurePosixPath('/srv/secret/path/inference_predictions.json'))"
+        )
+
+    monkeypatch.setattr(catalog, "load", boom)
+
+    response = client.get("/datasets/inference_predictions")
+    assert response.status_code == 404
+
+    detail = response.json()["detail"]
+    assert "kedro run" in detail
+    assert "/srv/secret/path" not in detail
+    assert "filepath" not in detail
