@@ -5,6 +5,7 @@ inference pipeline reuses the training transforms, that it never fits anything,
 and that a clean checkout can actually run.
 """
 
+import importlib.util
 from pathlib import Path
 
 import yaml
@@ -87,6 +88,33 @@ def test_every_fitted_artifact_is_persisted_and_reused():
         assert artifact in consumed, f"{artifact} is not reused at inference"
 
 
+def test_everything_inference_loads_is_versioned_together():
+    """Rollback is only coherent if the whole set rolls back together.
+
+    Inference applies the encoder, scaler, imputer and fences that training
+    fitted. Versioning the model alone would let a rollback pair an old
+    estimator with new features — the failure is silent, because the shapes
+    still line up. Kedro stamps one save_version per run, so versioning the set
+    makes "the artifacts of run X" a directory, not a reassembly job.
+    """
+    loaded = _inputs(PIPELINES["inference"]) & set(CATALOG)
+    fitted = {
+        name
+        for name in loaded
+        if CATALOG[name]["filepath"].startswith("data/06_models/")
+    }
+    assert fitted == {
+        "imputer",
+        "outlier_bounds",
+        "encoder",
+        "scaler",
+        "production_model",
+    }
+
+    unversioned = sorted(name for name in fitted if not CATALOG[name].get("versioned"))
+    assert not unversioned, f"inference loads these unversioned: {unversioned}"
+
+
 def test_inference_depends_on_the_promoted_model():
     assert "production_model" in _inputs(PIPELINES["inference"])
     assert "production_model" in _outputs(PIPELINES["modelling"])
@@ -106,11 +134,58 @@ def test_free_inputs_are_catalogued_or_parameterised():
             assert name in CATALOG, f"{name} is neither produced nor catalogued"
 
 
+ARTIFACTS = frozenset(
+    {"imputer", "outlier_bounds", "encoder", "scaler", "baseline_model", "tuned_model"}
+)
+
+
+def _layer(name):
+    return (CATALOG[name].get("metadata") or {}).get("kedro-viz", {}).get("layer")
+
+
 def test_persisted_datasets_declare_a_viz_layer():
-    """kedro viz groups the graph by layer; an untagged dataset floats loose."""
-    for name, entry in CATALOG.items():
-        layer = entry.get("metadata", {}).get("kedro-viz", {}).get("layer")
-        assert layer, f"{name} has no kedro-viz layer"
+    """kedro viz groups the graph by layer; an untagged dataset floats loose.
+
+    The fitted transformers and the two candidates are the deliberate exception
+    — see ``test_the_layer_graph_is_acyclic`` for why.
+    """
+    for name in CATALOG:
+        if name in ARTIFACTS:
+            assert not _layer(name), f"{name} must stay out of the layer graph"
+            continue
+        assert _layer(name), f"{name} has no kedro-viz layer"
+
+
+def test_the_layer_graph_is_acyclic():
+    """A cycle makes kedro viz disable layer bands for the WHOLE graph.
+
+    Not a warning you notice: the app still renders, just flat, so the labels
+    silently stop buying anything. The cycle is inherent to fit/apply — the
+    encoder is fitted from feature data and then used to produce it — which is
+    why fitted artifacts carry no layer at all.
+    """
+    edges, layers = set(), set()
+    for pipeline in PIPELINES.values():
+        for node in pipeline.nodes:
+            for source in node.inputs:
+                for target in node.outputs:
+                    if source not in CATALOG or target not in CATALOG:
+                        continue
+                    a, b = _layer(source), _layer(target)
+                    if a and b and a != b:
+                        edges.add((a, b))
+                        layers |= {a, b}
+
+    # Kahn's algorithm: whatever cannot be ordered is in a cycle.
+    remaining = set(layers)
+    while True:
+        free = {
+            x for x in remaining if not any(b == x and a in remaining for a, b in edges)
+        }
+        if not free:
+            break
+        remaining -= free
+    assert not remaining, f"layers are cyclic: {sorted(remaining)}"
 
 
 def test_catalog_has_no_unused_entries():
@@ -150,3 +225,21 @@ def test_quality_reports_are_persisted():
         "inference_data_quality",
     ):
         assert report in CATALOG, f"{report} is not persisted"
+
+
+def test_the_committed_diagram_is_current():
+    """docs/pipelines.md is generated; a stale diagram is worse than none.
+
+    It is the only view of the graph a reader gets without starting kedro viz,
+    so it has to be the graph the code actually builds.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "export_pipeline_diagram",
+        Path(__file__).resolve().parents[1] / "scripts" / "export_pipeline_diagram.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert (
+        module.TARGET.read_text() == module.render()
+    ), "docs/pipelines.md is out of date — run `make diagram`"

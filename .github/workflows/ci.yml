@@ -67,16 +67,37 @@ jobs:
           import json
           from pathlib import Path
 
-          model = Path("data/06_models/production_model.pkl")
+          # Versioned datasets save to <filepath>/<save_version>/<filename>, so
+          # the artifacts are globbed rather than named directly.
+          artifacts = {
+              name: sorted(Path("data/06_models", name).glob("*/" + name))
+              for name in (
+                  "imputer.pkl",
+                  "outlier_bounds.json",
+                  "encoder.pkl",
+                  "scaler.pkl",
+                  "production_model.pkl",
+              )
+          }
           predictions = Path("data/07_model_output/inference_predictions.json")
           reports = [
               Path(f"data/08_reporting/{name}_quality.json")
               for name in ("modelling_data", "master_table", "inference_data")
           ]
 
-          missing = [str(p) for p in [model, predictions, *reports] if not p.exists()]
+          missing = [name for name, found in artifacts.items() if not found]
           assert not missing, f"pipeline did not produce: {missing}"
+          missing = [str(p) for p in [predictions, *reports] if not p.exists()]
+          assert not missing, f"pipeline did not produce: {missing}"
+
+          model = artifacts["production_model.pkl"][-1]
           assert model.stat().st_size > 0, "production_model.pkl is empty"
+
+          # A rollback is only coherent if the model and the transformers that
+          # shaped its features come from the same run, so the run must stamp
+          # all five with one save_version.
+          versions = {name: found[-1].parent.name for name, found in artifacts.items()}
+          assert len(set(versions.values())) == 1, f"artifacts disagree on version: {versions}"
 
           for report in reports:
               result = json.loads(report.read_text())
@@ -87,7 +108,8 @@ jobs:
           assert all(0.0 <= row["probability"] <= 1.0 for row in scored)
           assert all(row["prediction"] in (0, 1) for row in scored)
 
-          print(f"OK: 3 suites green, {len(scored)} rows scored")
+          print(f"OK: 3 suites green, {len(scored)} rows scored, "
+                f"5 artifacts at {next(iter(set(versions.values())))}")
           PY
 
   docker:
